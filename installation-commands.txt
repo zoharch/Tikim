@@ -1,0 +1,25 @@
+# Alternative installation commands to try manually if pnpm fails
+
+# Option 1: Try with npm instead
+npm install
+
+# Option 2: Install packages individually
+pnpm add playwright
+pnpm add @playwright/test
+
+# Option 3: Install with longer timeout
+pnpm install --fetch-timeout=600000
+
+# Option 4: Install without dev dependencies first, then add them
+pnpm install --prod
+pnpm add -D playwright
+
+# Option 5: Use different registry (if corporate network)
+pnpm install --registry https://registry.npmjs.org/
+
+# Option 6: Clear cache and try again
+pnpm store prune
+pnpm install
+
+# After successful installation, install browsers:
+pnpm exec playwright install
