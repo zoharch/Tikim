@@ -1,8 +1,10 @@
 const { chromium } = require('playwright');
 const fs = require('fs').promises;
+const path = require('path');
+const { readLatestXLSXtoJSON } = require('./io/readFile');
 
-const inputFile = 'ids.txt';
-const outputFile = 'debt_check_results.json';
+const outputDir = path.join(__dirname, 'output');
+const outputFile = path.join(outputDir, 'debt_check_results.json');
 
 class InsolvencyChecker {
     constructor(options = {}) {
@@ -36,16 +38,46 @@ class InsolvencyChecker {
             await this.page.waitForTimeout(1000);
             await this.page.waitForSelector('#lstData_GenericGridDiv', { timeout: 15000 });
 
+            // Extract table headers and values as individual props
+            let detailProps = {};
             let rowDetails = await this.page.evaluate(() => {
                 const table = document.querySelector('#lstData_grdDataList');
                 if (table && table.rows.length > 0) {
                     const firstRow = table.rows[0];
-                    if (firstRow && firstRow.cells.length > 0) {
-                        return Array.from(firstRow.cells).map(cell => cell.innerText.trim());
-                    }
+                    const headers = Array.from(table.parentElement.querySelectorAll('tr')[0].cells).map(cell => cell.innerText.trim());
+                    const values = Array.from(firstRow.cells).map(cell => cell.innerText.trim());
+                    return { headers, values };
                 }
-                return [];
+                return { headers: [], values: [] };
             });
+            // Map Hebrew headers to English keys
+            const hebrewToEnglish = {
+                'מספר תיק': 'caseID',
+                'מספר מזהה': 'personalID',
+                'חייב יחיד': 'individualDebtor',
+                'הממונה על חדלות פרעון': 'insolvencyCommissioner',
+                'סוג תיק': 'caseType',
+                'רשות מטפלת': 'handlingAuthority',
+                'מספר תיק ממונה': 'commissionerCaseNumber',
+                'מספר תיק בהמ"ש': 'courtCaseNumber',
+                'מספר תיק רשות האכיפה': 'enforcementCaseNumber',
+                'שם יחיד / תאגיד': 'debtorName',
+                'מזהה יחיד / תאגיד': 'debtorId',
+                'מחוז': 'district',
+                'קישור': 'link',
+                'פרטים': 'detailsLink'
+            };
+            if (rowDetails.headers.length === rowDetails.values.length) {
+                for (let i = 0; i < rowDetails.headers.length; i++) {
+                    const hebKey = rowDetails.headers[i];
+                    let engKey = hebrewToEnglish[hebKey];
+                    if (!engKey) {
+                        // If not mapped, use cell_<number>
+                        engKey = `cell_${i+1}`;
+                    }
+                    detailProps[engKey] = rowDetails.values[i];
+                }
+            }
 
             let pratimIndex = -1;
             let kinusDate = null;
@@ -54,9 +86,9 @@ class InsolvencyChecker {
             let tikStatus = null;
             let lawyerNames = [];
 
-            if (rowDetails.length > 0) {
-                for (let i = 0; i < rowDetails.length; i++) {
-                    if (rowDetails[i] === 'פרטים') {
+            if (rowDetails.values.length > 0) {
+                for (let i = 0; i < rowDetails.headers.length; i++) {
+                    if (rowDetails.headers[i] === 'פרטים') {
                         pratimIndex = i;
                         const pratimSelector = `#lstData_grdDataList tr td:nth-child(${i + 1}) a`;
                         const pratimLink = await this.page.$(pratimSelector);
@@ -114,16 +146,34 @@ class InsolvencyChecker {
                                     await this.page.waitForSelector('#lstData_grdDataList', { timeout: 20000 });
                                     await this.page.waitForTimeout(2000);
                                     console.log('Extracting lawyer names from lstData_grdDataList...');
-                                    lawyerNames = await this.page.evaluate(() => {
+                                    // Extract lawyer name only if matches 'אריה חגי', and also extract claimant (td before)
+                                    const lawyerData = await this.page.evaluate(() => {
                                         const table = document.getElementById('lstData_grdDataList');
-                                        if (!table) return [];
+                                        if (!table) return null;
                                         const rows = Array.from(table.querySelectorAll('tr'));
-                                        return rows.map(tr => {
+                                        for (const tr of rows) {
                                             const tds = tr.querySelectorAll('td');
-                                            return tds.length > 1 ? tds[1].innerText.trim() : null;
-                                        }).filter(val => val);
+                                            if (tds.length > 2) {
+                                                const lawyerName = tds[1].innerText.trim();
+                                                if (lawyerName === 'אריה חגי') {
+                                                    const claimant = tds[0].innerText.trim();
+                                                    return { lawyerName, claimant };
+                                                }
+                                            }
+                                        }
+                                        return null;
                                     });
-                                    console.log(`Done extracting lawyer names: ${JSON.stringify(lawyerNames)}`);
+                                    if (lawyerData) {
+                                        lawyerNames = [lawyerData.lawyerName];
+                                        detailProps.claimant = lawyerData.claimant;
+                                    } else {
+                                        lawyerNames = [];
+                                    }
+                                    if (lawyerData) {
+                                        console.log(`Done extracting Arie Hagay, claimant: ${detailProps.claimant || ''}`);
+                                    } else {
+                                        console.log('Done extracting Arie Hagay, not found.');
+                                    }
                                 } else {
                                     console.log('No תביעות tab found in menu.');
                                 }
@@ -136,17 +186,18 @@ class InsolvencyChecker {
                 }
             }
 
-            const hasDebt = rowDetails.length > 0 && rowDetails[0] !== '';
+            const hasDebt = Object.keys(detailProps).length > 0 && Object.values(detailProps)[0] !== '';
             return {
                 personId: personId,
                 hasDebt: hasDebt,
                 status: hasDebt ? 'DEBT_FOUND' : 'NO_DEBT',
-                details: hasDebt ? rowDetails : [],
+                ...detailProps,
                 kinusDate: kinusDate || null,
                 pshitaDate: pshitaDate || null,
                 cancellationDate: cancellationDate || null,
                 tikStatus: tikStatus || null,
-                'עו"ד מייצג': lawyerNames
+                layerName: lawyerNames.length > 0 ? lawyerNames[0] : '',
+                claimant: detailProps.claimant || ''
             };
         } catch (error) {
             console.error(`Error checking person ID ${personId}:`, error.message);
@@ -308,39 +359,149 @@ class InsolvencyChecker {
 async function main(options = {}) {
     const checker = new InsolvencyChecker(options);
 
+    // Ensure output directory exists and clean its content
     try {
-        await fs.unlink(outputFile);
-        console.log(`Removed previous ${outputFile}`);
-    } catch (err) {
-        if (err.code !== 'ENOENT') {
-            console.log(`Error removing ${outputFile}:`, err.message);
+        await fs.mkdir(outputDir, { recursive: true });
+        const files = await fs.readdir(outputDir);
+        for (const file of files) {
+            const filePath = path.join(outputDir, file);
+            try {
+                await fs.unlink(filePath);
+            } catch (err) {
+                console.error(`Failed to remove ${filePath}:`, err.message);
+            }
         }
+        console.log('Cleaned output directory.');
+    } catch (err) {
+        console.error('Failed to create or clean output directory:', err.message);
+        return;
     }
 
+    let inputJson = null;
     let idList = [];
     let results = [];
     try {
         await checker.init(options);
         try {
-            const fileContent = await fs.readFile(inputFile, 'utf8');
-            idList = fileContent.split('\n')
-                .map(line => line.trim())
-                .filter(line => line && !line.startsWith('#'));
-            console.log(`Loaded ${idList.length} IDs from ${inputFile}`);
+            // Use readLatestXLSXtoJSON to get input data
+            const inputDir = path.join(__dirname, 'input');
+            inputJson = await readLatestXLSXtoJSON(inputDir);
+            // Extract personalIDs from input rows
+            idList = inputJson.rows.map(row => row.personalID).filter(Boolean);
+            console.log(`idList: ${JSON.stringify(idList)}`);
+            console.log(`Loaded ${idList.length} personalIDs from input XLSX`);
         } catch (error) {
-            console.log(`${inputFile} not found, using example IDs`);
+            console.log('No valid input XLSX found, using example IDs');
             idList = [
                 '123456789',
                 '987654321',
                 '555666777'
             ];
+            inputJson = { rows: [], titles: {} };
         }
         if (idList.length === 0) {
-            console.log('No IDs to process. Please add IDs to ids.txt file (one per line)');
+            console.log('No personalIDs to process. Please add rows to the input XLSX file.');
             return;
         }
-        results = await checker.processIdList(idList);
-        await checker.saveResults(results);
+        // Map personalID to input row for easy lookup
+        const inputRowMap = {};
+        for (const row of inputJson.rows) {
+            if (row.personalID) inputRowMap[row.personalID] = row;
+        }
+        // Get results from checker
+        const rawResults = await checker.processIdList(idList);
+        // Extend each result with input row
+        results = rawResults.map(r => {
+            const inputRow = inputRowMap[r.personId] || {};
+            return { ...inputRow, ...r };
+        });
+
+        // Build extended titles object
+        const inputTitles = inputJson.titles || {};
+        // Collect all keys from results, ensure caseID is first, personalID is present
+        let allKeysArr = Array.from(new Set(Object.keys(inputTitles)));
+        for (const obj of results) {
+            Object.keys(obj).forEach(k => {
+                if (!allKeysArr.includes(k)) allKeysArr.push(k);
+            });
+        }
+        // Ensure caseID is first, personalID is present
+        allKeysArr = allKeysArr.filter(k => k !== 'caseID' && k !== 'personalID');
+        allKeysArr = ['caseID', 'personalID', ...allKeysArr];
+        const allKeys = new Set(allKeysArr);
+        // Extend titles with readable names for new props
+        const extendedTitles = { ...inputTitles };
+        // Add Hebrew mapping for English keys
+        const englishToHebrew = {
+            personId: inputTitles.personalID || 'מספר מזהה',
+            hasDebt: 'יש חוב ?',
+            status: 'סטטוס',
+            caseType: 'סוג תיק',
+            handlingAuthority: 'רשות מטפלת',
+            commissionerCaseNumber: 'מספר תיק ממונה',
+            courtCaseNumber: 'מספר תיק בהמ"ש',
+            enforcementCaseNumber: 'מספר תיק רשות האכיפה',
+            debtorName: 'שם יחיד / תאגיד',
+            debtorId: 'מזהה יחיד / תאגיד',
+            district: 'מחוז',
+            link: 'קישור',
+            detailsLink: 'פרטים',
+            kinusDate: 'תאריך צו כינוס',
+            pshitaDate: 'תאריך צו פתיחת הליכים/פירוק',
+            cancellationDate: 'תאריך ביטול/חיסול/עיכוב הצו',
+            tikStatus: 'סטטוס התיק',
+            'עו"ד מייצג': 'עו"ד מייצג',
+            error: 'שגיאה',
+            cell_3: 'מחוז',
+            cell_4: 'מזהה יחיד / תאגיד',
+            cell_5: 'שם יחיד / תאגיד',
+            cell_6: 'מספר תיק רשות האכיפה',
+            cell_7: 'מספר תיק בהמ"ש',
+            cell_8: 'מספר תיק ממונה'
+        };
+        for (const k of allKeys) {
+            if (!(k in extendedTitles)) {
+                extendedTitles[k] = englishToHebrew[k] || k;
+            }
+        }
+
+        // Build output JSON
+        const outputJson = {
+            timestamp: new Date().toISOString(),
+            totalChecked: results.length,
+            withDebt: results.filter(r => r.hasDebt === true).length,
+            withoutDebt: results.filter(r => r.hasDebt === false).length,
+            errors: results.filter(r => r.status === 'ERROR').length,
+            titles: extendedTitles,
+            results: results
+        };
+
+        // Save output JSON
+        await fs.writeFile(outputFile, JSON.stringify(outputJson, null, 2));
+        console.log(`\nResults saved to ${outputFile}`);
+
+        // Create XLSX from outputJson
+        try {
+            const xlsx = require('xlsx');
+            const headerKeys = Object.keys(extendedTitles);
+            const xlsxRows = results.map(obj => headerKeys.map(k => obj[k]));
+            const xlsxData = [headerKeys.map(k => extendedTitles[k]), ...xlsxRows];
+            if (xlsxData.length > 1) {
+                const ws = xlsx.utils.aoa_to_sheet(xlsxData);
+                // Enable auto-filter for all columns
+                ws['!autofilter'] = { ref: `A1:${String.fromCharCode(65 + headerKeys.length - 1)}1` };
+                const wb = xlsx.utils.book_new();
+                xlsx.utils.book_append_sheet(wb, ws, 'Results');
+                const xlsxFilename = outputFile.replace('.json', '.xlsx');
+                xlsx.writeFile(wb, xlsxFilename);
+                console.log(`XLSX results saved to ${xlsxFilename}`);
+            } else {
+                console.log('No data to write to XLSX file.');
+            }
+        } catch (err) {
+            console.error('Error saving XLSX file:', err.message);
+        }
+
         checker.printSummary(results);
     } catch (error) {
         console.error('Main execution error:', error.message);
