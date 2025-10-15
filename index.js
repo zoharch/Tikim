@@ -5,17 +5,17 @@ const inputFile = 'ids.txt';
 const outputFile = 'debt_check_results.json';
 
 class InsolvencyChecker {
-    constructor() {
+    constructor(options = {}) {
         this.browser = null;
         this.page = null;
         this.baseUrl = 'https://insolvency.justice.gov.il/poshtim/main/tikim/wfrmlisttikim.aspx';
+        this.headless = options.headless === true;
     }
 
     async init() {
         console.log('Initializing browser...');
-        const headless = (this._headless !== undefined) ? this._headless : false;
-        this.browser = await chromium.launch({ 
-            headless,
+        this.browser = await chromium.launch({
+            headless: this.headless,
             slowMo: 1000 // Add delay between actions for debugging
         });
         this.page = await this.browser.newPage();
@@ -49,23 +49,87 @@ class InsolvencyChecker {
 
             let pratimIndex = -1;
             let kinusDate = null;
+            let pshitaDate = null;
+            let cancellationDate = null;
+            let tikStatus = null;
+            let lawyerNames = [];
+
             if (rowDetails.length > 0) {
                 for (let i = 0; i < rowDetails.length; i++) {
                     if (rowDetails[i] === 'פרטים') {
                         pratimIndex = i;
-                        try {
-                            const pratimSelector = `#lstData_grdDataList tr td:nth-child(${i + 1}) a`;
-                            const pratimLink = await this.page.$(pratimSelector);
-                            if (pratimLink) {
-                                await pratimLink.click();
-                                await this.page.waitForSelector('#lstTikGeneralDetails_txtTzavKinusDate', { timeout: 10000 });
+                        const pratimSelector = `#lstData_grdDataList tr td:nth-child(${i + 1}) a`;
+                        const pratimLink = await this.page.$(pratimSelector);
+                        if (pratimLink) {
+                            await pratimLink.click();
+                            // Extract each field independently
+                            try {
+                                await this.page.waitForSelector('#lstTikGeneralDetails_txtTzavKinusDate', { timeout: 5000 });
                                 kinusDate = await this.page.$eval('#lstTikGeneralDetails_txtTzavKinusDate', el => el.value);
-                                console.log(`Extracted kinus date: ${kinusDate}`);
-                            } else {
-                                console.log(`No clickable link found in 'פרטים' cell.`);
+                            } catch (err) {
+                                console.log('Error extracting תאריך כינוס:', err.message);
                             }
-                        } catch (err) {
-                            console.log(`Error clicking 'פרטים' or extracting date:`, err.message);
+                            try {
+                                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTzavPshitaDate"]', { timeout: 5000 });
+                                pshitaDate = await this.page.$eval('[name="lstTikGeneralDetails$txtTzavPshitaDate"]', el => el.value);
+                            } catch (err) {
+                                console.log('Error extracting צו פתיחת הליכים/פירוק:', err.message);
+                            }
+                            try {
+                                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTzavCancellationDate"]', { timeout: 5000 });
+                                cancellationDate = await this.page.$eval('[name="lstTikGeneralDetails$txtTzavCancellationDate"]', el => el.value);
+                            } catch (err) {
+                                console.log('Error extracting ביטול/חיסול/עיכוב הצו:', err.message);
+                            }
+                            try {
+                                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTikStatus"]', { timeout: 5000 });
+                                tikStatus = await this.page.$eval('[name="lstTikGeneralDetails$txtTikStatus"]', el => el.value);
+                            } catch (err) {
+                                console.log('Error extracting סטטוס התיק:', err.message);
+                            }
+                            console.log(`Extracted kinus date: ${kinusDate}, צו פתיחת: ${pshitaDate}, ביטול/חיסול/עיכוב: ${cancellationDate}, סטטוס התיק: ${tikStatus}`);
+
+                            // Now click the <a> with text 'תביעות החוב' and extract lawyer names
+                            try {
+                                console.log('Waiting for table mnuTikim_lstMenu...');
+                                await this.page.waitForSelector('table#mnuTikim_lstMenu', { timeout: 20000 });
+                                console.log('Found table mnuTikim_lstMenu.');
+                                console.log('Searching for תביעות tab in mnuTikim_lstMenu...');
+                                await this.page.waitForSelector('table#mnuTikim_lstMenu tr td', { timeout: 20000 });
+                                const tdHandles = await this.page.$$('table#mnuTikim_lstMenu tr td');
+                                let foundTviot = false;
+                                for (const td of tdHandles) {
+                                    const text = await td.innerText();
+                                    if (text.includes('תביעות')) {
+                                        const link = await td.$('a');
+                                        if (link) {
+                                            console.log('Found תביעות tab, clicking...');
+                                            await link.click();
+                                            foundTviot = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (foundTviot) {
+                                    await this.page.waitForSelector('#lstData_grdDataList', { timeout: 20000 });
+                                    await this.page.waitForTimeout(2000);
+                                    console.log('Extracting lawyer names from lstData_grdDataList...');
+                                    lawyerNames = await this.page.evaluate(() => {
+                                        const table = document.getElementById('lstData_grdDataList');
+                                        if (!table) return [];
+                                        const rows = Array.from(table.querySelectorAll('tr'));
+                                        return rows.map(tr => {
+                                            const tds = tr.querySelectorAll('td');
+                                            return tds.length > 1 ? tds[1].innerText.trim() : null;
+                                        }).filter(val => val);
+                                    });
+                                    console.log(`Done extracting lawyer names: ${JSON.stringify(lawyerNames)}`);
+                                } else {
+                                    console.log('No תביעות tab found in menu.');
+                                }
+                            } catch (err) {
+                                console.log('Error extracting lawyer names:', err.message);
+                            }
                         }
                         break;
                     }
@@ -78,7 +142,11 @@ class InsolvencyChecker {
                 hasDebt: hasDebt,
                 status: hasDebt ? 'DEBT_FOUND' : 'NO_DEBT',
                 details: hasDebt ? rowDetails : [],
-                kinusDate: kinusDate || null
+                kinusDate: kinusDate || null,
+                pshitaDate: pshitaDate || null,
+                cancellationDate: cancellationDate || null,
+                tikStatus: tikStatus || null,
+                'עו"ד מייצג': lawyerNames
             };
         } catch (error) {
             console.error(`Error checking person ID ${personId}:`, error.message);
@@ -137,7 +205,7 @@ class InsolvencyChecker {
                 'מחוז',
                 'קישור'
             ];
-            const csvHeaders = ['Person ID', 'Has Debt', 'Status', ...detailHeaders, 'תאריך כינוס', 'Error'];
+            const csvHeaders = ['תעודת זהות', 'יש חוב ?', 'סטטוס', ...detailHeaders, 'תאריך צו פתיחת הליכים/צו כינוס', 'תאריך צו פתיחת הליכים/פירוק', 'תאריך ביטול/חיסול/עיכוב הצו', 'סטטוס התיק', 'Error'];
             const maxDetailsLen = detailHeaders.length;
             const csvRows = results.map(r => {
                 const details = Array.isArray(r.details) ? r.details : [];
@@ -148,23 +216,19 @@ class InsolvencyChecker {
                     r.status,
                     ...paddedDetails,
                     r.kinusDate || '',
+                    r.pshitaDate || '',
+                    r.cancellationDate || '',
+                    r.tikStatus || '',
                     r.error || ''
                 ].map(val => {
-                    if (typeof val === 'string' && (val.includes(',') || val.includes('"'))) {
+                    if (typeof val === 'string' && (val.includes(',') || val.includes('"')))
                         return '"' + val.replace(/"/g, '""') + '"';
-                    }
                     return val;
                 }).join(',');
             });
             const csvContent = '\uFEFF' + [csvHeaders.join(','), ...csvRows].join('\n');
             const csvFilename = filename.replace('.json', '.csv');
-            // try {
-            //     await fs.writeFile(csvFilename, csvContent, 'utf8');
-            //     console.log(`CSV results saved to ${csvFilename}`);
-            // } catch (csvErr) {
-            //     errorLog.push(`CSV error: ${csvErr.message}`);
-            //     console.error('Error saving CSV file:', csvErr.message);
-            // }
+            // ...existing code...
 
             try {
                 const xlsx = require('xlsx');
@@ -177,6 +241,9 @@ class InsolvencyChecker {
                         r.status,
                         ...paddedDetails,
                         r.kinusDate || '',
+                        r.pshitaDate || '',
+                        r.cancellationDate || '',
+                        r.tikStatus || '',
                         r.error || ''
                     ];
                 });
@@ -239,10 +306,7 @@ class InsolvencyChecker {
 
 // Main function
 async function main(options = {}) {
-    const checker = new InsolvencyChecker();
-    if (options.headless !== undefined) {
-        checker._headless = options.headless;
-    }
+    const checker = new InsolvencyChecker(options);
 
     try {
         await fs.unlink(outputFile);
