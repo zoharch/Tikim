@@ -47,7 +47,7 @@ async function readLatestXLSXtoJSON(inputDir) {
         caseName: 'שם תיק',
         personalID: 'מספר מזהה'
     };
-    const dataRows = rows.slice(1); // skip header, include all data rows
+    const dataRows = rows.slice(1,4); // skip header, include all data rows
     const mappedRows = dataRows.map(row => mapRow(row, Object.keys(titles)));
     return { file, rows: mappedRows, titles };
 }

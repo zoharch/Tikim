@@ -357,6 +357,7 @@ class InsolvencyChecker {
 
 // Main function
 async function main(options = {}) {
+            // ...existing code...
     const checker = new InsolvencyChecker(options);
 
     // Ensure output directory exists and clean its content
@@ -480,24 +481,74 @@ async function main(options = {}) {
         await fs.writeFile(outputFile, JSON.stringify(outputJson, null, 2));
         console.log(`\nResults saved to ${outputFile}`);
 
-        // Create XLSX from outputJson
+        // Create XLSX from outputJson using exceljs for maximum compatibility
         try {
-            const xlsx = require('xlsx');
+            const ExcelJS = require('exceljs');
             const headerKeys = Object.keys(extendedTitles);
-            const xlsxRows = results.map(obj => headerKeys.map(k => obj[k]));
-            const xlsxData = [headerKeys.map(k => extendedTitles[k]), ...xlsxRows];
-            if (xlsxData.length > 1) {
-                const ws = xlsx.utils.aoa_to_sheet(xlsxData);
-                // Enable auto-filter for all columns
-                ws['!autofilter'] = { ref: `A1:${String.fromCharCode(65 + headerKeys.length - 1)}1` };
-                const wb = xlsx.utils.book_new();
-                xlsx.utils.book_append_sheet(wb, ws, 'Results');
-                const xlsxFilename = outputFile.replace('.json', '.xlsx');
-                xlsx.writeFile(wb, xlsxFilename);
-                console.log(`XLSX results saved to ${xlsxFilename}`);
-            } else {
-                console.log('No data to write to XLSX file.');
-            }
+            const workbook = new ExcelJS.Workbook();
+            const worksheet = workbook.addWorksheet('Results', {
+                views: [{ rightToLeft: true, state: 'frozen', ySplit: 1 }]
+            });
+            // Add header row
+            worksheet.addRow(headerKeys.map(k => extendedTitles[k]));
+            // Style header row and add borders
+            headerKeys.forEach((key, colIdx) => {
+                const cell = worksheet.getCell(1, colIdx + 1);
+                cell.font = { bold: true };
+                cell.alignment = { horizontal: 'center', vertical: 'middle' };
+                cell.fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FFDDEEFF' }
+                };
+                cell.border = {
+                    top: { style: 'thin' },
+                    left: { style: 'thin' },
+                    bottom: { style: 'thin' },
+                    right: { style: 'thin' }
+                };
+            });
+            // Add data rows and borders
+            // Auto width for columns
+            worksheet.columns.forEach((column, colIdx) => {
+                let maxLength = 10; // Minimum width
+                column.eachCell({ includeEmpty: true }, cell => {
+                    const cellValue = cell.value ? cell.value.toString() : '';
+                    if (cellValue.length > maxLength) {
+                        maxLength = cellValue.length;
+                    }
+                });
+                column.width = maxLength + 2; // Add padding
+            });
+            results.forEach((row, rowIdx) => {
+                worksheet.addRow(headerKeys.map((key) => row[key]));
+                headerKeys.forEach((key, colIdx) => {
+                    const cell = worksheet.getCell(rowIdx + 2, colIdx + 1);
+                    cell.border = {
+                        top: { style: 'thin' },
+                        left: { style: 'thin' },
+                        bottom: { style: 'thin' },
+                        right: { style: 'thin' }
+                    };
+                    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+                });
+            });
+            // Enable auto-filter for all columns
+            worksheet.autoFilter = {
+                from: {
+                    row: 1,
+                    column: 1
+                },
+                to: {
+                    row: 1,
+                    column: headerKeys.length
+                }
+            };
+            // Freeze header row (already set in views)
+            // XLSX export block is above; removed duplicate
+            const xlsxFilename = outputFile.replace('.json', '.xlsx');
+            await workbook.xlsx.writeFile(xlsxFilename);
+            console.log(`XLSX results saved to ${xlsxFilename}`);
         } catch (err) {
             console.error('Error saving XLSX file:', err.message);
         }
