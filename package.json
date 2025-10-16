@@ -2,11 +2,12 @@
     "name": "insolvency-checker",
     "version": "1.0.0",
     "description": "Node.js Playwright project to check personal IDs for debt status on Israeli insolvency site",
-    "main": "index.js",
+    "main": "main.js",
     "bin": "index.js",
     "scripts": {
-        "start": "node index.js",
-        "start:headless": "node index.js --headless",
+        "start": "node index.js --outputDir=output",
+        "start:headless": "node index.js --headless --outputDir=output",
+        "start:parallel": "node main.js",
         "test": "pnpm exec playwright test",
         "build:exe": "pnpm exec nexe index.js -- --headless -t windows-x64-22.0.0 -o insolvency-checker.exe --build",
         "install-browsers": "pnpm exec playwright install"

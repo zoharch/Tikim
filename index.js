@@ -1,574 +1,504 @@
-const { chromium } = require('playwright');
-const fs = require('fs').promises;
+// index.js - Refactored for worker compatibility and direct function export
+const fs = require('fs/promises');
 const path = require('path');
-const { readLatestXLSXtoJSON } = require('./io/readFile');
+const ExcelJS = require('exceljs');
+const {parentPort, workerData, isMainThread} = require('worker_threads');
 
-const outputDir = path.join(__dirname, 'output');
-const outputFile = path.join(outputDir, 'debt_check_results.json');
+// Dummy InsolvencyChecker for demonstration; replace with your real logic
+const englishToHebrew = {
+  personId: 'מספר מזהה',
+  hasDebt: 'יש חוב ?',
+  status: 'סטטוס',
+  individualDebtor: 'סוג תיק',
+  insolvencyCommissioner: 'רשות מטפלת',
+  commissionerCaseNumber: 'מספר תיק ממונה',
+  courtCaseNumber: 'מספר תיק בהמ"ש',
+  enforcementCaseNumber: 'מספר תיק רשות האכיפה',
+  debtorName: 'שם יחיד / תאגיד',
+  debtorId: 'מזהה יחיד / תאגיד',
+  district: 'מחוז',
+  link: 'קישור',
+  detailsLink: 'פרטים',
+  kinusDate: 'תאריך צו כינוס',
+  pshitaDate: 'תאריך צו פתיחת הליכים/פירוק',
+  cancellationDate: 'תאריך ביטול/חיסול/עיכוב הצו',
+  tikStatus: 'סטטוס התיק',
+  layer: 'עו"ד מייצג',
+  error: 'שגיאה',
+  cell_3: 'מספר תיק ממונה',
+  cell_4: 'מספר תיק בהמ"ש',
+  cell_5: 'מספר תיק רשות האכיפה',
+  cell_6: 'שם יחיד / תאגיד',
+  cell_7: 'מזהה יחיד / תאגיד',
+  cell_8: 'מחוז',
+  claimant: 'נושה',
+};
 
+const {chromium} = require('playwright');
 class InsolvencyChecker {
-    constructor(options = {}) {
-        this.browser = null;
-        this.page = null;
-        this.baseUrl = 'https://insolvency.justice.gov.il/poshtim/main/tikim/wfrmlisttikim.aspx';
-        this.headless = options.headless === true;
+  constructor(options = {}) {
+    this.browser = null;
+    this.page = null;
+    this.baseUrl = 'https://insolvency.justice.gov.il/poshtim/main/tikim/wfrmlisttikim.aspx';
+    // Detect headless from options, workerData, or process.argv
+    if (typeof options.headless !== 'undefined') {
+      this.headless = options.headless;
+    } else if (typeof workerData !== 'undefined' && workerData && typeof workerData.headless !== 'undefined') {
+      this.headless = workerData.headless;
+    } else {
+      this.headless = process.argv.includes('--headless');
     }
+  }
 
-    async init() {
-        console.log('Initializing browser...');
-        this.browser = await chromium.launch({
-            headless: this.headless,
-            slowMo: 1000 // Add delay between actions for debugging
-        });
-        this.page = await this.browser.newPage();
-        this.page.setDefaultTimeout(30000);
-        console.log('Navigating to insolvency site...');
-        await this.page.goto(this.baseUrl);
-        await this.page.waitForLoadState('networkidle');
-    }
+  async init() {
+    console.log(`Initializing browser... Headless: ${this.headless}`);
+    this.browser = await chromium.launch({
+      headless: this.headless,
+      slowMo: 1000,
+    });
+    this.page = await this.browser.newPage();
+    this.page.setDefaultTimeout(30000);
+    console.log('Navigating to insolvency site...');
+    await this.page.goto(this.baseUrl);
+    await this.page.waitForLoadState('networkidle');
+  }
 
-    async checkPersonId(personId) {
-        try {
-            console.log(`Checking person ID: ${personId}`);
-            await this.page.waitForSelector('input[name="rngListTikim$txtPoshetID"]', { timeout: 10000 });
-            await this.page.fill('input[name="rngListTikim$txtPoshetID"]', personId);
-            console.log(`Entered ID: ${personId}`);
-            await this.page.click('input[id="btnSearch"]');
-            console.log('Clicked search button');
-            await this.page.waitForTimeout(1000);
-            await this.page.waitForSelector('#lstData_GenericGridDiv', { timeout: 15000 });
+  async checkPersonId(personId) {
+    try {
+      console.log(`Checking person ID: ${personId}`);
+      await this.page.waitForSelector('input[name="rngListTikim$txtPoshetID"]', {timeout: 10000});
+      await this.page.fill('input[name="rngListTikim$txtPoshetID"]', personId);
+      console.log(`Entered ID: ${personId}`);
+      await this.page.click('input[id="btnSearch"]');
+      console.log('Clicked search button');
+      await this.page.waitForTimeout(1000);
+      await this.page.waitForSelector('#lstData_GenericGridDiv', {timeout: 15000});
 
-            // Extract table headers and values as individual props
-            let detailProps = {};
-            let rowDetails = await this.page.evaluate(() => {
-                const table = document.querySelector('#lstData_grdDataList');
-                if (table && table.rows.length > 0) {
-                    const firstRow = table.rows[0];
-                    const headers = Array.from(table.parentElement.querySelectorAll('tr')[0].cells).map(cell => cell.innerText.trim());
-                    const values = Array.from(firstRow.cells).map(cell => cell.innerText.trim());
-                    return { headers, values };
-                }
-                return { headers: [], values: [] };
-            });
-            // Map Hebrew headers to English keys
-            const hebrewToEnglish = {
-                'מספר תיק': 'caseID',
-                'מספר מזהה': 'personalID',
-                'חייב יחיד': 'individualDebtor',
-                'הממונה על חדלות פרעון': 'insolvencyCommissioner',
-                'סוג תיק': 'caseType',
-                'רשות מטפלת': 'handlingAuthority',
-                'מספר תיק ממונה': 'commissionerCaseNumber',
-                'מספר תיק בהמ"ש': 'courtCaseNumber',
-                'מספר תיק רשות האכיפה': 'enforcementCaseNumber',
-                'שם יחיד / תאגיד': 'debtorName',
-                'מזהה יחיד / תאגיד': 'debtorId',
-                'מחוז': 'district',
-                'קישור': 'link',
-                'פרטים': 'detailsLink'
-            };
-            if (rowDetails.headers.length === rowDetails.values.length) {
-                for (let i = 0; i < rowDetails.headers.length; i++) {
-                    const hebKey = rowDetails.headers[i];
-                    let engKey = hebrewToEnglish[hebKey];
-                    if (!engKey) {
-                        // If not mapped, use cell_<number>
-                        engKey = `cell_${i+1}`;
-                    }
-                    detailProps[engKey] = rowDetails.values[i];
-                }
+      // Extract table headers and values as individual props
+      let detailProps = {};
+      let rowDetails = await this.page.evaluate(() => {
+        const table = document.querySelector('#lstData_grdDataList');
+        if (table && table.rows.length > 0) {
+          const firstRow = table.rows[0];
+          const headers = Array.from(table.parentElement.querySelectorAll('tr')[0].cells).map((cell) => cell.innerText.trim());
+          const values = Array.from(firstRow.cells).map((cell) => cell.innerText.trim());
+          return {headers, values};
+        }
+        return {headers: [], values: []};
+      });
+      // Map Hebrew headers to English keys
+      const hebrewToEnglish = {
+        'מספר תיק': 'caseID',
+        'מספר מזהה': 'personalID',
+        'הממונה על חדלות פרעון': 'insolvencyCommissioner',
+        'סוג תיק': 'individualDebtor',
+        'רשות מטפלת': 'insolvencyCommissioner',
+        'מספר תיק ממונה': 'commissionerCaseNumber',
+        'מספר תיק בהמ"ש': 'courtCaseNumber',
+        'מספר תיק רשות האכיפה': 'enforcementCaseNumber',
+        'שם יחיד / תאגיד': 'debtorName',
+        'מזהה יחיד / תאגיד': 'debtorId',
+        מחוז: 'district',
+        קישור: 'link',
+        פרטים: 'detailsLink',
+        נושה: 'claimant',
+      };
+      if (rowDetails.headers.length === rowDetails.values.length) {
+        for (let i = 0; i < rowDetails.headers.length; i++) {
+          const hebKey = rowDetails.headers[i];
+          let engKey = hebrewToEnglish[hebKey];
+          if (!engKey) {
+            engKey = `cell_${i + 1}`;
+          }
+          // Special handling for individualDebtor: extract full text from span if present
+          if (engKey === 'individualDebtor') {
+            try {
+              // Extract full text including parentheses, do not trim off brackets
+              const fullText = await this.page.$eval('span[id^="bnrTikTopInfo_grdInfo_Label4_"]', (el) => el.textContent);
+              // Remove only leading/trailing whitespace, not parentheses
+              detailProps[engKey] = fullText.replace(/^\s+|\s+$/g, '');
+            } catch (e) {
+              detailProps[engKey] = rowDetails.values[i];
             }
+          } else {
+            detailProps[engKey] = rowDetails.values[i];
+          }
+        }
+      }
 
-            let pratimIndex = -1;
-            let kinusDate = null;
-            let pshitaDate = null;
-            let cancellationDate = null;
-            let tikStatus = null;
-            let lawyerNames = [];
+      let pratimIndex = -1;
+      let kinusDate = null;
+      let pshitaDate = null;
+      let cancellationDate = null;
+      let tikStatus = null;
+      let lawyerNames = [];
 
-            if (rowDetails.values.length > 0) {
-                for (let i = 0; i < rowDetails.headers.length; i++) {
-                    if (rowDetails.headers[i] === 'פרטים') {
-                        pratimIndex = i;
-                        const pratimSelector = `#lstData_grdDataList tr td:nth-child(${i + 1}) a`;
-                        const pratimLink = await this.page.$(pratimSelector);
-                        if (pratimLink) {
-                            await pratimLink.click();
-                            // Extract each field independently
-                            try {
-                                await this.page.waitForSelector('#lstTikGeneralDetails_txtTzavKinusDate', { timeout: 5000 });
-                                kinusDate = await this.page.$eval('#lstTikGeneralDetails_txtTzavKinusDate', el => el.value);
-                            } catch (err) {
-                                console.log('Error extracting תאריך כינוס:', err.message);
-                            }
-                            try {
-                                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTzavPshitaDate"]', { timeout: 5000 });
-                                pshitaDate = await this.page.$eval('[name="lstTikGeneralDetails$txtTzavPshitaDate"]', el => el.value);
-                            } catch (err) {
-                                console.log('Error extracting צו פתיחת הליכים/פירוק:', err.message);
-                            }
-                            try {
-                                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTzavCancellationDate"]', { timeout: 5000 });
-                                cancellationDate = await this.page.$eval('[name="lstTikGeneralDetails$txtTzavCancellationDate"]', el => el.value);
-                            } catch (err) {
-                                console.log('Error extracting ביטול/חיסול/עיכוב הצו:', err.message);
-                            }
-                            try {
-                                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTikStatus"]', { timeout: 5000 });
-                                tikStatus = await this.page.$eval('[name="lstTikGeneralDetails$txtTikStatus"]', el => el.value);
-                            } catch (err) {
-                                console.log('Error extracting סטטוס התיק:', err.message);
-                            }
-                            console.log(`Extracted kinus date: ${kinusDate}, צו פתיחת: ${pshitaDate}, ביטול/חיסול/עיכוב: ${cancellationDate}, סטטוס התיק: ${tikStatus}`);
+      if (rowDetails.values.length > 0) {
+        for (let i = 0; i < rowDetails.headers.length; i++) {
+          if (rowDetails.headers[i] === 'פרטים') {
+            pratimIndex = i;
+            const pratimSelector = `#lstData_grdDataList tr td:nth-child(${i + 1}) a`;
+            const pratimLink = await this.page.$(pratimSelector);
+            if (pratimLink) {
+              await pratimLink.click();
+              try {
+                await this.page.waitForSelector('#lstTikGeneralDetails_txtTzavKinusDate', {timeout: 5000});
+                kinusDate = await this.page.$eval('#lstTikGeneralDetails_txtTzavKinusDate', (el) => el.value);
+              } catch (err) {
+                console.log('Error extracting תאריך כינוס:', err.message);
+              }
+              try {
+                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTzavPshitaDate"]', {timeout: 5000});
+                pshitaDate = await this.page.$eval('[name="lstTikGeneralDetails$txtTzavPshitaDate"]', (el) => el.value);
+              } catch (err) {
+                console.log('Error extracting צו פתיחת הליכים/פירוק:', err.message);
+              }
+              try {
+                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTzavCancellationDate"]', {timeout: 5000});
+                cancellationDate = await this.page.$eval('[name="lstTikGeneralDetails$txtTzavCancellationDate"]', (el) => el.value);
+              } catch (err) {
+                console.log('Error extracting ביטול/חיסול/עיכוב הצו:', err.message);
+              }
+              try {
+                await this.page.waitForSelector('[name="lstTikGeneralDetails$txtTikStatus"]', {timeout: 5000});
+                tikStatus = await this.page.$eval('[name="lstTikGeneralDetails$txtTikStatus"]', (el) => el.value);
+              } catch (err) {
+                console.log('Error extracting סטטוס התיק:', err.message);
+              }
+              console.log(
+                `Extracted kinus date: ${kinusDate}, צו פתיחת: ${pshitaDate}, ביטול/חיסול/עיכוב: ${cancellationDate}, סטטוס התיק: ${tikStatus}`
+              );
 
-                            // Now click the <a> with text 'תביעות החוב' and extract lawyer names
-                            try {
-                                console.log('Waiting for table mnuTikim_lstMenu...');
-                                await this.page.waitForSelector('table#mnuTikim_lstMenu', { timeout: 20000 });
-                                console.log('Found table mnuTikim_lstMenu.');
-                                console.log('Searching for תביעות tab in mnuTikim_lstMenu...');
-                                await this.page.waitForSelector('table#mnuTikim_lstMenu tr td', { timeout: 20000 });
-                                const tdHandles = await this.page.$$('table#mnuTikim_lstMenu tr td');
-                                let foundTviot = false;
-                                for (const td of tdHandles) {
-                                    const text = await td.innerText();
-                                    if (text.includes('תביעות')) {
-                                        const link = await td.$('a');
-                                        if (link) {
-                                            console.log('Found תביעות tab, clicking...');
-                                            await link.click();
-                                            foundTviot = true;
-                                            break;
-                                        }
-                                    }
-                                }
-                                if (foundTviot) {
-                                    await this.page.waitForSelector('#lstData_grdDataList', { timeout: 20000 });
-                                    await this.page.waitForTimeout(2000);
-                                    console.log('Extracting lawyer names from lstData_grdDataList...');
-                                    // Extract lawyer name only if matches 'אריה חגי', and also extract claimant (td before)
-                                    const lawyerData = await this.page.evaluate(() => {
-                                        const table = document.getElementById('lstData_grdDataList');
-                                        if (!table) return null;
-                                        const rows = Array.from(table.querySelectorAll('tr'));
-                                        for (const tr of rows) {
-                                            const tds = tr.querySelectorAll('td');
-                                            if (tds.length > 2) {
-                                                const lawyerName = tds[1].innerText.trim();
-                                                if (lawyerName === 'אריה חגי') {
-                                                    const claimant = tds[0].innerText.trim();
-                                                    return { lawyerName, claimant };
-                                                }
-                                            }
-                                        }
-                                        return null;
-                                    });
-                                    if (lawyerData) {
-                                        lawyerNames = [lawyerData.lawyerName];
-                                        detailProps.claimant = lawyerData.claimant;
-                                    } else {
-                                        lawyerNames = [];
-                                    }
-                                    if (lawyerData) {
-                                        console.log(`Done extracting Arie Hagay, claimant: ${detailProps.claimant || ''}`);
-                                    } else {
-                                        console.log('Done extracting Arie Hagay, not found.');
-                                    }
-                                } else {
-                                    console.log('No תביעות tab found in menu.');
-                                }
-                            } catch (err) {
-                                console.log('Error extracting lawyer names:', err.message);
-                            }
+              // Now click the <a> with text 'תביעות החוב' and extract lawyer names
+              try {
+                console.log('Waiting for table mnuTikim_lstMenu...');
+                await this.page.waitForSelector('table#mnuTikim_lstMenu', {timeout: 20000});
+                console.log('Found table mnuTikim_lstMenu.');
+                console.log('Searching for תביעות tab in mnuTikim_lstMenu...');
+                await this.page.waitForSelector('table#mnuTikim_lstMenu tr td', {timeout: 20000});
+                const tdHandles = await this.page.$$('table#mnuTikim_lstMenu tr td');
+                let foundTviot = false;
+                for (const td of tdHandles) {
+                  const text = await td.innerText();
+                  if (text.includes('תביעות')) {
+                    const link = await td.$('a');
+                    if (link) {
+                      console.log('Found תביעות tab, clicking...');
+                      await link.click();
+                      foundTviot = true;
+                      break;
+                    }
+                  }
+                }
+                if (foundTviot) {
+                  await this.page.waitForSelector('#lstData_grdDataList', {timeout: 20000});
+                  await this.page.waitForTimeout(2000);
+                  console.log('Extracting lawyer names from lstData_grdDataList...');
+                  const lawyerData = await this.page.evaluate(() => {
+                    const table = document.getElementById('lstData_grdDataList');
+                    if (!table) return null;
+                    const rows = Array.from(table.querySelectorAll('tr'));
+                    let claimants = [];
+                    let foundLawyer = false;
+                    for (const tr of rows) {
+                      const tds = tr.querySelectorAll('td');
+                      if (tds.length > 2) {
+                        const lawyerName = tds[1].innerText.trim();
+                        if (lawyerName === 'אריה חגי') {
+                          foundLawyer = true;
+                          const claimant = tds[0].innerText.trim();
+                          claimants.push(claimant);
                         }
-                        break;
+                      }
                     }
-                }
-            }
-
-            const hasDebt = Object.keys(detailProps).length > 0 && Object.values(detailProps)[0] !== '';
-            return {
-                personId: personId,
-                hasDebt: hasDebt,
-                status: hasDebt ? 'DEBT_FOUND' : 'NO_DEBT',
-                ...detailProps,
-                kinusDate: kinusDate || null,
-                pshitaDate: pshitaDate || null,
-                cancellationDate: cancellationDate || null,
-                tikStatus: tikStatus || null,
-                layerName: lawyerNames.length > 0 ? lawyerNames[0] : '',
-                claimant: detailProps.claimant || ''
-            };
-        } catch (error) {
-            console.error(`Error checking person ID ${personId}:`, error.message);
-            return {
-                personId: personId,
-                hasDebt: null,
-                status: 'ERROR',
-                error: error.message
-            };
-        }
-    }
-
-    async processIdList(idList) {
-        const results = [];
-        console.log(`Starting to process ${idList.length} IDs...`);
-        for (let i = 0; i < idList.length; i++) {
-            const personId = idList[i].trim();
-            if (personId) {
-                console.log(`\nProcessing ${i + 1}/${idList.length}: ${personId}`);
-                await this.page.goto(this.baseUrl);
-                await this.page.waitForLoadState('networkidle');
-                const result = await this.checkPersonId(personId);
-                results.push(result);
-                if (i < idList.length - 1) {
-                    console.log('Waiting before next request...');
-                    await this.page.waitForTimeout(2000);
-                }
-            }
-        }
-        return results;
-    }
-
-    async saveResults(results, filename = outputFile) {
-        let errorLog = [];
-        try {
-            const timestamp = new Date().toISOString();
-            const output = {
-                timestamp: timestamp,
-                totalChecked: results.length,
-                withDebt: results.filter(r => r.hasDebt === true).length,
-                withoutDebt: results.filter(r => r.hasDebt === false).length,
-                errors: results.filter(r => r.status === 'ERROR').length,
-                results: results
-            };
-            await fs.writeFile(filename, JSON.stringify(output, null, 2));
-            console.log(`\nResults saved to ${filename}`);
-
-            const detailHeaders = [
-                'סוג תיק',
-                'רשות מטפלת',
-                'מספר תיק ממונה',
-                'מספר תיק בהמ"ש',
-                'מספר תיק רשות האכיפה',
-                'שם יחיד / תאגיד',
-                'מזהה יחיד / תאגיד',
-                'מחוז',
-                'קישור'
-            ];
-            const csvHeaders = ['תעודת זהות', 'יש חוב ?', 'סטטוס', ...detailHeaders, 'תאריך צו פתיחת הליכים/צו כינוס', 'תאריך צו פתיחת הליכים/פירוק', 'תאריך ביטול/חיסול/עיכוב הצו', 'סטטוס התיק', 'Error'];
-            const maxDetailsLen = detailHeaders.length;
-            const csvRows = results.map(r => {
-                const details = Array.isArray(r.details) ? r.details : [];
-                const paddedDetails = [...details, ...Array(maxDetailsLen - details.length).fill('')];
-                return [
-                    r.personId,
-                    r.hasDebt,
-                    r.status,
-                    ...paddedDetails,
-                    r.kinusDate || '',
-                    r.pshitaDate || '',
-                    r.cancellationDate || '',
-                    r.tikStatus || '',
-                    r.error || ''
-                ].map(val => {
-                    if (typeof val === 'string' && (val.includes(',') || val.includes('"')))
-                        return '"' + val.replace(/"/g, '""') + '"';
-                    return val;
-                }).join(',');
-            });
-            const csvContent = '\uFEFF' + [csvHeaders.join(','), ...csvRows].join('\n');
-            const csvFilename = filename.replace('.json', '.csv');
-            // ...existing code...
-
-            try {
-                const xlsx = require('xlsx');
-                const xlsxRows = results.map(r => {
-                    const details = Array.isArray(r.details) ? r.details : [];
-                    const paddedDetails = [...details, ...Array(detailHeaders.length - details.length).fill('')];
-                    return [
-                        r.personId,
-                        r.hasDebt,
-                        r.status,
-                        ...paddedDetails,
-                        r.kinusDate || '',
-                        r.pshitaDate || '',
-                        r.cancellationDate || '',
-                        r.tikStatus || '',
-                        r.error || ''
-                    ];
-                });
-                const xlsxData = [csvHeaders, ...xlsxRows];
-                if (xlsxData.length > 1) {
-                    const ws = xlsx.utils.aoa_to_sheet(xlsxData);
-                    const wb = xlsx.utils.book_new();
-                    xlsx.utils.book_append_sheet(wb, ws, 'Results');
-                    const xlsxFilename = filename.replace('.json', '.xlsx');
-                    xlsx.writeFile(wb, xlsxFilename);
-                    console.log(`XLSX results saved to ${xlsxFilename}`);
+                    if (foundLawyer) {
+                      return {lawyerName: 'אריה חגי', claimants};
+                    }
+                    return null;
+                  });
+                  if (lawyerData) {
+                    lawyerNames = [lawyerData.lawyerName];
+                    detailProps.claimant = lawyerData.claimants.join(' | ');
+                  } else {
+                    lawyerNames = [];
+                  }
+                  if (lawyerData) {
+                    console.log(`Done extracting Arie Hagay, claimants: ${detailProps.claimant || ''}`);
+                  } else {
+                    console.log('Done extracting Arie Hagay, not found.');
+                  }
                 } else {
-                    errorLog.push('No data to write to XLSX file.');
-                    console.log('No data to write to XLSX file.');
+                  console.log('No תביעות tab found in menu.');
                 }
-            } catch (err) {
-                errorLog.push(`XLSX error: ${err.message}`);
-                console.error('Error saving XLSX file:', err.message);
+              } catch (err) {
+                console.log('Error extracting lawyer names:', err.message);
+              }
             }
-
-            if (errorLog.length > 0) {
-                try {
-                    await fs.writeFile('error_log.txt', errorLog.join('\n'), 'utf8');
-                    console.log('Errors logged to error_log.txt');
-                } catch (logErr) {
-                    console.error('Failed to write error log:', logErr.message);
-                }
-            }
-        } catch (error) {
-            try {
-                await fs.writeFile('error_log.txt', error.message, 'utf8');
-                console.error('Main error logged to error_log.txt');
-            } catch (logErr) {
-                console.error('Failed to write main error log:', logErr.message);
-            }
-            console.error('Error saving results:', error.message);
+            break;
+          }
         }
-    }
+      }
 
-    async close() {
-        if (this.browser) {
-            await this.browser.close();
-            console.log('Browser closed');
-        }
-    }
-
-    printSummary(results) {
-        console.log('\n=== SUMMARY ===');
-        console.log(`Total IDs checked: ${results.length}`);
-        console.log(`With debt: ${results.filter(r => r.hasDebt === true).length}`);
-        console.log(`Without debt: ${results.filter(r => r.hasDebt === false).length}`);
-        console.log(`Errors: ${results.filter(r => r.status === 'ERROR').length}`);
-        const withDebt = results.filter(r => r.hasDebt === true);
-        if (withDebt.length > 0) {
-            console.log('\nIDs with debt:');
-            withDebt.forEach(r => console.log(`  - ${r.personId}`));
-        }
-    }
-}
-
-// Main function
-async function main(options = {}) {
-            // ...existing code...
-    const checker = new InsolvencyChecker(options);
-
-    // Ensure output directory exists and clean its content
-    try {
-        await fs.mkdir(outputDir, { recursive: true });
-        const files = await fs.readdir(outputDir);
-        for (const file of files) {
-            const filePath = path.join(outputDir, file);
-            try {
-                await fs.unlink(filePath);
-            } catch (err) {
-                console.error(`Failed to remove ${filePath}:`, err.message);
-            }
-        }
-        console.log('Cleaned output directory.');
-    } catch (err) {
-        console.error('Failed to create or clean output directory:', err.message);
-        return;
-    }
-
-    let inputJson = null;
-    let idList = [];
-    let results = [];
-    try {
-        await checker.init(options);
-        try {
-            // Use readLatestXLSXtoJSON to get input data
-            const inputDir = path.join(__dirname, 'input');
-            inputJson = await readLatestXLSXtoJSON(inputDir);
-            // Extract personalIDs from input rows
-            idList = inputJson.rows.map(row => row.personalID).filter(Boolean);
-            console.log(`idList: ${JSON.stringify(idList)}`);
-            console.log(`Loaded ${idList.length} personalIDs from input XLSX`);
-        } catch (error) {
-            console.log('No valid input XLSX found, using example IDs');
-            idList = [
-                '123456789',
-                '987654321',
-                '555666777'
-            ];
-            inputJson = { rows: [], titles: {} };
-        }
-        if (idList.length === 0) {
-            console.log('No personalIDs to process. Please add rows to the input XLSX file.');
-            return;
-        }
-        // Map personalID to input row for easy lookup
-        const inputRowMap = {};
-        for (const row of inputJson.rows) {
-            if (row.personalID) inputRowMap[row.personalID] = row;
-        }
-        // Get results from checker
-        const rawResults = await checker.processIdList(idList);
-        // Extend each result with input row
-        results = rawResults.map(r => {
-            const inputRow = inputRowMap[r.personId] || {};
-            return { ...inputRow, ...r };
-        });
-
-        // Build extended titles object
-        const inputTitles = inputJson.titles || {};
-        // Collect all keys from results, ensure caseID is first, personalID is present
-        let allKeysArr = Array.from(new Set(Object.keys(inputTitles)));
-        for (const obj of results) {
-            Object.keys(obj).forEach(k => {
-                if (!allKeysArr.includes(k)) allKeysArr.push(k);
-            });
-        }
-        // Ensure caseID is first, personalID is present
-        allKeysArr = allKeysArr.filter(k => k !== 'caseID' && k !== 'personalID');
-        allKeysArr = ['caseID', 'personalID', ...allKeysArr];
-        const allKeys = new Set(allKeysArr);
-        // Extend titles with readable names for new props
-        const extendedTitles = { ...inputTitles };
-        // Add Hebrew mapping for English keys
-        const englishToHebrew = {
-            personId: inputTitles.personalID || 'מספר מזהה',
-            hasDebt: 'יש חוב ?',
-            status: 'סטטוס',
-            caseType: 'סוג תיק',
-            handlingAuthority: 'רשות מטפלת',
-            commissionerCaseNumber: 'מספר תיק ממונה',
-            courtCaseNumber: 'מספר תיק בהמ"ש',
-            enforcementCaseNumber: 'מספר תיק רשות האכיפה',
-            debtorName: 'שם יחיד / תאגיד',
-            debtorId: 'מזהה יחיד / תאגיד',
-            district: 'מחוז',
-            link: 'קישור',
-            detailsLink: 'פרטים',
-            kinusDate: 'תאריך צו כינוס',
-            pshitaDate: 'תאריך צו פתיחת הליכים/פירוק',
-            cancellationDate: 'תאריך ביטול/חיסול/עיכוב הצו',
-            tikStatus: 'סטטוס התיק',
-            'עו"ד מייצג': 'עו"ד מייצג',
-            error: 'שגיאה',
-            cell_3: 'מחוז',
-            cell_4: 'מזהה יחיד / תאגיד',
-            cell_5: 'שם יחיד / תאגיד',
-            cell_6: 'מספר תיק רשות האכיפה',
-            cell_7: 'מספר תיק בהמ"ש',
-            cell_8: 'מספר תיק ממונה'
-        };
-        for (const k of allKeys) {
-            if (!(k in extendedTitles)) {
-                extendedTitles[k] = englishToHebrew[k] || k;
-            }
-        }
-
-        // Build output JSON
-        const outputJson = {
-            timestamp: new Date().toISOString(),
-            totalChecked: results.length,
-            withDebt: results.filter(r => r.hasDebt === true).length,
-            withoutDebt: results.filter(r => r.hasDebt === false).length,
-            errors: results.filter(r => r.status === 'ERROR').length,
-            titles: extendedTitles,
-            results: results
-        };
-
-        // Save output JSON
-        await fs.writeFile(outputFile, JSON.stringify(outputJson, null, 2));
-        console.log(`\nResults saved to ${outputFile}`);
-
-        // Create XLSX from outputJson using exceljs for maximum compatibility
-        try {
-            const ExcelJS = require('exceljs');
-            const headerKeys = Object.keys(extendedTitles);
-            const workbook = new ExcelJS.Workbook();
-            const worksheet = workbook.addWorksheet('Results', {
-                views: [{ rightToLeft: true, state: 'frozen', ySplit: 1 }]
-            });
-            // Add header row
-            worksheet.addRow(headerKeys.map(k => extendedTitles[k]));
-            // Style header row and add borders
-            headerKeys.forEach((key, colIdx) => {
-                const cell = worksheet.getCell(1, colIdx + 1);
-                cell.font = { bold: true };
-                cell.alignment = { horizontal: 'center', vertical: 'middle' };
-                cell.fill = {
-                    type: 'pattern',
-                    pattern: 'solid',
-                    fgColor: { argb: 'FFDDEEFF' }
-                };
-                cell.border = {
-                    top: { style: 'thin' },
-                    left: { style: 'thin' },
-                    bottom: { style: 'thin' },
-                    right: { style: 'thin' }
-                };
-            });
-            // Add data rows and borders
-            // Auto width for columns
-            worksheet.columns.forEach((column, colIdx) => {
-                let maxLength = 10; // Minimum width
-                column.eachCell({ includeEmpty: true }, cell => {
-                    const cellValue = cell.value ? cell.value.toString() : '';
-                    if (cellValue.length > maxLength) {
-                        maxLength = cellValue.length;
-                    }
-                });
-                column.width = maxLength + 2; // Add padding
-            });
-            results.forEach((row, rowIdx) => {
-                worksheet.addRow(headerKeys.map((key) => row[key]));
-                headerKeys.forEach((key, colIdx) => {
-                    const cell = worksheet.getCell(rowIdx + 2, colIdx + 1);
-                    cell.border = {
-                        top: { style: 'thin' },
-                        left: { style: 'thin' },
-                        bottom: { style: 'thin' },
-                        right: { style: 'thin' }
-                    };
-                    cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-                });
-            });
-            // Enable auto-filter for all columns
-            worksheet.autoFilter = {
-                from: {
-                    row: 1,
-                    column: 1
-                },
-                to: {
-                    row: 1,
-                    column: headerKeys.length
-                }
-            };
-            // Freeze header row (already set in views)
-            // XLSX export block is above; removed duplicate
-            const xlsxFilename = outputFile.replace('.json', '.xlsx');
-            await workbook.xlsx.writeFile(xlsxFilename);
-            console.log(`XLSX results saved to ${xlsxFilename}`);
-        } catch (err) {
-            console.error('Error saving XLSX file:', err.message);
-        }
-
-        checker.printSummary(results);
+      const hasDebt = Object.keys(detailProps).length > 0 && Object.values(detailProps)[0] !== '';
+      return {
+        personId: personId,
+        hasDebt: hasDebt,
+        status: hasDebt ? 'DEBT_FOUND' : 'NO_DEBT',
+        ...detailProps,
+        kinusDate: kinusDate || null,
+        pshitaDate: pshitaDate || null,
+        cancellationDate: cancellationDate || null,
+        tikStatus: tikStatus || null,
+        layer: lawyerNames.length > 0 ? lawyerNames[0] : '',
+        claimant: detailProps.claimant || '',
+      };
     } catch (error) {
-        console.error('Main execution error:', error.message);
-        try {
-            await fs.writeFile('error_log.txt', error.message, 'utf8');
-            console.error('Main error logged to error_log.txt');
-        } catch (logErr) {
-            console.error('Failed to write main error log:', logErr.message);
-        }
+      console.error(`Error checking person ID ${personId}:`, error.message);
+      return {
+        personId: personId,
+        hasDebt: null,
+        status: 'ERROR',
+        error: error.message,
+      };
     }
-    await checker.close();
+  }
+
+  async process(rows) {
+    if (!this.browser || !this.page) {
+      await this.init();
+    }
+    const results = [];
+    for (let i = 0; i < rows.length; i++) {
+      let personId = rows[i].personId || rows[i]['מספר מזהה'] || rows[i].personalID || '';
+      if (!personId) continue;
+      console.log(`\nProcessing ${i + 1}/${rows.length}: ${personId}`);
+      await this.page.goto(this.baseUrl);
+      await this.page.waitForLoadState('networkidle');
+      const result = await this.checkPersonId(personId);
+      results.push(result);
+      if (i < rows.length - 1) {
+        console.log('Waiting before next request...');
+        await this.page.waitForTimeout(2000);
+      }
+    }
+    return results;
+  }
+
+  async close() {
+    if (this.browser) {
+      await this.browser.close();
+      console.log('Browser closed');
+    }
+  }
 }
 
-module.exports = { InsolvencyChecker, main };
-
-if (require.main === module) {
-    const isHeadless = process.argv.includes('--headless');
-    main({ headless: isHeadless }).catch(console.error);
+// XLSX export function
+async function exportToXLSX(results, extendedTitles, outputFile) {
+  // Map all keys to their Hebrew titles, skip personId
+  const titleToKeys = {};
+  for (const key of Object.keys(extendedTitles)) {
+    if (key === 'personId') continue;
+    const title = extendedTitles[key];
+    if (!titleToKeys[title]) titleToKeys[title] = [];
+    titleToKeys[title].push(key);
+  }
+  // Also add keys from results that aren't in extendedTitles, skip personId
+  for (const row of results) {
+    for (const key of Object.keys(row)) {
+      if (key === 'personId') continue;
+      const title = extendedTitles[key] || key;
+      if (!titleToKeys[title]) titleToKeys[title] = [];
+      if (!titleToKeys[title].includes(key)) titleToKeys[title].push(key);
+    }
+  }
+  // Final ordered list of titles, excluding 'קישור' and 'פרטים', and reordering last columns
+  let orderedTitles = Object.keys(titleToKeys).filter((title) => title !== 'קישור' && title !== 'פרטים');
+  // Move claimant, layer, error to the end in the specified order
+  const lastTitles = ['נושה', 'עו"ד מייצג', 'שגיאה'];
+  orderedTitles = orderedTitles.filter((t) => !lastTitles.includes(t));
+  orderedTitles = [...orderedTitles, ...lastTitles];
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Results', {
+    views: [{rightToLeft: true, state: 'frozen', ySplit: 1}],
+  });
+  // Add header row
+  worksheet.addRow(orderedTitles);
+  // Style header row and add borders
+  orderedTitles.forEach((title, colIdx) => {
+    const cell = worksheet.getCell(1, colIdx + 1);
+    cell.font = {bold: true};
+    cell.alignment = {horizontal: 'center', vertical: 'middle'};
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: {argb: 'FFDDEEFF'},
+    };
+    cell.border = {
+      top: {style: 'thin'},
+      left: {style: 'thin'},
+      bottom: {style: 'thin'},
+      right: {style: 'thin'},
+    };
+  });
+  // Add data rows and borders
+  results.forEach((row, rowIdx) => {
+    // For each title, use the first non-empty value from its mapped keys
+    const rowData = orderedTitles.map((title) => {
+      const keys = Array.isArray(titleToKeys[title]) ? titleToKeys[title] : [];
+      for (const key of keys) {
+        if (row[key] !== undefined && row[key] !== '') {
+          return row[key];
+        }
+      }
+      return '';
+    });
+    worksheet.addRow(rowData);
+    orderedTitles.forEach((title, colIdx) => {
+      const cell = worksheet.getCell(rowIdx + 2, colIdx + 1);
+      cell.border = {
+        top: {style: 'thin'},
+        left: {style: 'thin'},
+        bottom: {style: 'thin'},
+        right: {style: 'thin'},
+      };
+      // If this is the claimant column and contains |
+      if (title === 'נושה' && typeof cell.value === 'string' && cell.value.includes('|')) {
+        cell.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: {argb: 'FFB3E5FC'}, // Light blue
+        };
+      }
+    });
+  });
+  // Auto width for columns
+  worksheet.columns.forEach((column, colIdx) => {
+    let maxLength = 10; // Minimum width
+    column.eachCell({includeEmpty: true}, (cell) => {
+      const cellValue = cell.value ? cell.value.toString() : '';
+      if (cellValue.length > maxLength) {
+        maxLength = cellValue.length;
+      }
+    });
+    column.width = maxLength + 2; // Add padding
+  });
+  // Enable auto-filter for all columns
+  worksheet.autoFilter = {
+    from: {row: 1, column: 1},
+    to: {row: 1, column: orderedTitles.length},
+  };
+  // Freeze header row (already set in views)
+  await workbook.xlsx.writeFile(outputFile);
+  return outputFile;
 }
+
+// Main processing function for worker and CLI
+async function processRows(rows, extendedTitles, outputFile) {
+  // Use englishToHebrew for column titles
+  const checker = new InsolvencyChecker();
+  let results = await checker.process(rows);
+  // Map cell_1 to individualDebtor if present and individualDebtor is missing or empty, then remove cell_1
+  results = results.map((r, idx) => {
+    let updated = {...r};
+    // Map cell_1 to individualDebtor if needed
+    if ((updated.individualDebtor === undefined || updated.individualDebtor === '') && updated.cell_1) {
+      updated.individualDebtor = updated.cell_1.replace(/^\s+|\s+$/g, '');
+    }
+    // Remove all cell_ fields and personId
+    Object.keys(updated).forEach((key) => {
+      if (/^cell_\d+$/.test(key) || key === 'personId') {
+        delete updated[key];
+      }
+    });
+    // Merge all original input fields into the result except personId
+    if (rows[idx]) {
+      for (const inputKey of Object.keys(rows[idx])) {
+        if (inputKey === 'personId') continue;
+        if (updated[inputKey] === undefined) {
+          updated[inputKey] = rows[idx][inputKey];
+        }
+      }
+    }
+    // Remap all keys to Hebrew
+    const hebrewRow = {};
+    for (const key of Object.keys(updated)) {
+      const hebKey = englishToHebrew[key] || key;
+      hebrewRow[hebKey] = updated[key];
+    }
+    return hebrewRow;
+  });
+  if (outputFile.endsWith('.json')) {
+    await fs.writeFile(outputFile, JSON.stringify(results, null, 2));
+  } else {
+    await fs.writeFile(outputFile.replace('.xlsx', '.json'), JSON.stringify(results, null, 2));
+    await exportToXLSX(results, englishToHebrew, outputFile);
+  }
+  return results;
+}
+
+// Worker thread entry
+if (!isMainThread && parentPort) {
+  // You may want to pass extendedTitles and outputFile via workerData
+  const {rows, extendedTitles, outputFile} = workerData;
+  processRows(rows, extendedTitles, outputFile)
+    .then((results) => parentPort.postMessage(results))
+    .catch((err) => parentPort.postMessage({error: err.message}));
+}
+
+// CLI entry
+if (isMainThread && require.main === module) {
+  // Example usage: node index.js [--headless]
+  function formatDate(d) {
+    const pad = (n) => n.toString().padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear().toString().slice(-2)} ${pad(d.getHours())}:${pad(
+      d.getMinutes()
+    )}:${pad(d.getSeconds())}`;
+  }
+  (async () => {
+    const startTime = new Date();
+    console.log(`[${formatDate(startTime)}] Headless run started`);
+    const {readLatestXLSXtoJSON} = require(path.join(__dirname, 'io', 'readFile.js'));
+    const inputDir = path.join(__dirname, 'input');
+    // Parse --outputDir=... from process.argv, default to output
+    let outputDir = 'output';
+    for (const arg of process.argv) {
+      if (arg.startsWith('--outputDir=')) {
+        outputDir = arg.split('=')[1];
+      }
+    }
+    outputDir = path.join(__dirname, outputDir);
+    await fs.mkdir(outputDir, {recursive: true});
+    const {file: inputFilePath, rows, titles: extendedTitles, errors: invalidIds} = await readLatestXLSXtoJSON(inputDir);
+    // Use input file name (without extension) for output file name
+    const inputBaseName = path.basename(inputFilePath, path.extname(inputFilePath));
+    let outputFile;
+    if (outputDir.endsWith(path.sep + 'output')) {
+      const now = new Date();
+      const pad = (n) => n.toString().padStart(2, '0');
+      const ts = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear().toString().slice(-2)}-${pad(now.getHours())}-${pad(
+        now.getMinutes()
+      )}`;
+      outputFile = path.join(outputDir, `${inputBaseName}-${ts}.xlsx`);
+    } else {
+      outputFile = path.join(outputDir, `${inputBaseName}.xlsx`);
+    }
+    await processRows(rows, extendedTitles, outputFile);
+    if (outputDir.endsWith(path.sep + 'output')) {
+      console.log(`Results saved to ${outputFile} and ${outputFile.replace('.xlsx', '.json')}`);
+    } else {
+      console.log(`Results saved to ${outputFile} and ${outputFile.replace('.xlsx', '.json')}`);
+    }
+    const endTime = new Date();
+    console.log(`[${formatDate(endTime)}] Headless run finished`);
+    // Print invalid IDs again at the very end, after execution time
+    if (invalidIds && invalidIds.length > 0) {
+      console.error('Summary of invalid IDs:');
+      invalidIds.forEach((e) => {
+        console.error(`Row ${e.row}: raw='${e.personalID}', cleaned='${e.cleanedID}'`);
+      });
+    }
+  })();
+}
+
+// Export for main.js
+module.exports = {processRows, exportToXLSX};
