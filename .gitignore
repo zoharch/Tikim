@@ -16,5 +16,3 @@ error_log.txt
 ids copy.txt
 dist/
 .nexe/
-input/
-output/
