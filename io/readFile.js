@@ -15,14 +15,34 @@ const path = require('path');
 const xlsx = require('xlsx');
 
 async function getLatestXLSXFile(dir) {
-  const files = await fs.readdir(dir);
-  // Ignore Excel temp/lock files (start with ~$)
-  const xlsxFiles = files.filter((f) => f.endsWith('.xlsx') && !f.startsWith('~$'));
-  if (xlsxFiles.length === 0) throw new Error('No XLSX files found');
-  // Sort by modified time descending
-  const stats = await Promise.all(xlsxFiles.map((f) => fs.stat(path.join(dir, f))));
-  const sorted = xlsxFiles.map((f, i) => ({file: f, mtime: stats[i].mtimeMs})).sort((a, b) => b.mtime - a.mtime);
-  return path.join(dir, sorted[0].file);
+  try {
+    const files = await fs.readdir(dir);
+    // Ignore Excel temp/lock files (start with ~$)
+    const xlsxFiles = files.filter((f) => (f.endsWith('.xlsx') || f.endsWith('.xls')) && !f.startsWith('~$'));
+    if (xlsxFiles.length === 0) {
+      console.error('\n===============================');
+      console.error('          ERROR');
+      console.error('===============================\n');
+      console.error('No Excel files found in the input folder.');
+      console.error(`\nPlease place an Excel file in:\n${dir}`);
+      console.error('\nExpected file formats: .xlsx or .xls');
+      console.error('\n===============================\n');
+      process.exit(1);
+    }
+    // Sort by modified time descending
+    const stats = await Promise.all(xlsxFiles.map((f) => fs.stat(path.join(dir, f))));
+    const sorted = xlsxFiles.map((f, i) => ({file: f, mtime: stats[i].mtimeMs})).sort((a, b) => b.mtime - a.mtime);
+    console.log(`Found input file: ${sorted[0].file}`);
+    return path.join(dir, sorted[0].file);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      console.error('\nError: Input directory does not exist.');
+      console.error(`Expected directory: ${dir}`);
+      console.error('Please create the directory and add Excel files.\n');
+      process.exit(1);
+    }
+    throw err;
+  }
 }
 
 function cleanCell(val) {

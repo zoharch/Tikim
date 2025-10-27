@@ -3,14 +3,35 @@
     "version": "1.0.0",
     "description": "Node.js Playwright project to check personal IDs for debt status on Israeli insolvency site",
     "main": "main.js",
-    "bin": "index.js",
+    "bin": {
+        "tikim": "main.js"
+    },
     "scripts": {
         "start": "node index.js --outputDir=output",
         "start:headless": "node index.js --headless --outputDir=output",
         "start:parallel": "node main.js",
         "test": "pnpm exec playwright test",
-        "build:exe": "pnpm exec nexe index.js -- --headless -t windows-x64-22.0.0 -o insolvency-checker.exe --build",
-        "install-browsers": "pnpm exec playwright install"
+        "install-browsers": "pnpm exec playwright install",
+        "build:dist": "node scripts/build-dist.js",
+        "build:exe": "pkg . --targets node18-win-x64 --output dist/tikim.exe"
+    },
+    "pkg": {
+        "scripts": [
+            "main.js",
+            "index.js",
+            "io/**/*.js"
+        ],
+        "assets": [
+            "node_modules/**/*",
+            ".local-browsers/**/*",
+            "io/**/*",
+            "input/**/*",
+            "output/**/*",
+            "temp/**/*",
+            "logs/**/*"
+        ],
+        "targets": ["node18-win-x64"],
+        "outputPath": "dist"
     },
     "keywords": [
         "playwright",
@@ -22,7 +43,8 @@
     "license": "MIT",
     "devDependencies": {
         "@types/node": "24.3.1",
-        "nexe": "5.0.0-beta.4"
+        "nexe": "5.0.0-beta.4",
+        "pkg": "5.8.1"
     },
     "dependencies": {
         "@playwright/test": "1.55.0",

@@ -40,11 +40,13 @@ class InsolvencyChecker {
     this.browser = null;
     this.page = null;
     this.baseUrl = 'https://insolvency.justice.gov.il/poshtim/main/tikim/wfrmlisttikim.aspx';
-    // Detect headless from options, workerData, or process.argv
+    // Detect headless from options, workerData, environment variable, or process.argv
     if (typeof options.headless !== 'undefined') {
       this.headless = options.headless;
     } else if (typeof workerData !== 'undefined' && workerData && typeof workerData.headless !== 'undefined') {
       this.headless = workerData.headless;
+    } else if (process.env.PLAYWRIGHT_HEADLESS === '1') {
+      this.headless = true;
     } else {
       this.headless = process.argv.includes('--headless');
     }
@@ -457,7 +459,8 @@ if (isMainThread && require.main === module) {
   (async () => {
     const startTime = new Date();
     console.log(`[${formatDate(startTime)}] Headless run started`);
-    const {readLatestXLSXtoJSON} = require(path.join(__dirname, 'io', 'readFile.js'));
+  // Use literal require so pkg can statically include the file
+  const {readLatestXLSXtoJSON} = require('./io/readFile.js');
     const inputDir = path.join(__dirname, 'input');
     // Parse --outputDir=... from process.argv, default to output
     let outputDir = 'output';
