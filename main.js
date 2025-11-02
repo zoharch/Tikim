@@ -9,10 +9,10 @@ async function log(message, type = 'info') {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] ${type.toUpperCase()}: ${message}`;
   console.log(logMessage);
-  
+
   try {
     const logDir = path.join(__dirname, 'logs');
-    await fs.mkdir(logDir, { recursive: true });
+    await fs.mkdir(logDir, {recursive: true});
     const logFile = path.join(logDir, `tikim-${new Date().toISOString().split('T')[0]}.log`);
     await fs.appendFile(logFile, logMessage + '\n');
   } catch (err) {
@@ -38,9 +38,9 @@ async function runParallel() {
   try {
     const startTime = new Date();
     await log(`Parallel run started - ${await formatDate(startTime)}`);
-    
+
     // Determine headless mode from environment or CLI
-    const headlessFlag = (process.env.PLAYWRIGHT_HEADLESS === '1') || process.argv.includes('--headless');
+    const headlessFlag = process.env.PLAYWRIGHT_HEADLESS === '1' || process.argv.includes('--headless');
     await log(`Headless mode: ${headlessFlag}`);
 
     // Resolve input directory from multiple possible locations to work with packaged exe
@@ -73,7 +73,7 @@ async function runParallel() {
         path.join(path.dirname(process.execPath), '..', name), // parent of exe
         path.join(defaultParent, name), // fallback (for dev/source tree)
       ];
-      
+
       // First try to find existing directory
       for (const d of candidates) {
         try {
@@ -86,32 +86,35 @@ async function runParallel() {
           // ignore and try next
         }
       }
-      
+
       // If none exist, create in first writable location
       for (const d of candidates) {
         try {
-          await fs.mkdir(d, { recursive: true });
+          await fs.mkdir(d, {recursive: true});
           await log(`Created ${name} directory: ${d}`);
           return d;
         } catch (e) {
           // ignore and try next
         }
       }
-      
+
       throw new Error(`Could not find or create ${name} directory in any of:\n${candidates.join('\n')}`);
     }
 
     const inputDir = await resolveInputDir();
     if (!inputDir) {
       await log('No input directory found. Checked common locations (cwd, exe dir, exe parent, snapshot).', 'error');
-      await log('Please either: 1) place an `input` folder next to the executable (or where you run the batch), or 2) add `input/**` to `pkg.assets` in package.json and rebuild with pnpm run build:dist.', 'error');
+      await log(
+        'Please either: 1) place an `input` folder next to the executable (or where you run the batch), or 2) add `input/**` to `pkg.assets` in package.json and rebuild with pnpm run build:dist.',
+        'error'
+      );
       process.exit(1);
     }
 
     const files = await fs.readdir(inputDir);
-    const excelFiles = files.filter(f => f.endsWith('.xlsx') || f.endsWith('.xls'));
-  
-  if (excelFiles.length === 0) {
+    const excelFiles = files.filter((f) => f.endsWith('.xlsx') || f.endsWith('.xls'));
+
+    if (excelFiles.length === 0) {
       await log('No Excel files found in the input folder', 'error');
       await log(`Expected input folder: ${inputDir}`, 'error');
       process.exit(1);
@@ -121,7 +124,7 @@ async function runParallel() {
 
     // Read input data using readFile.js logic (use literal require so pkg can include it)
     const {readLatestXLSXtoJSON} = require('./io/readFile.js');
-    
+
     // Resolve output and temp directories
     const outputDir = await ensureDir('output', __dirname);
     const tempDir = await ensureDir('temp', __dirname);
@@ -147,109 +150,109 @@ async function runParallel() {
       await log(`Worker ${idx}: assigned ${chunk.length} rows.`);
     }
 
-  // Worker function: runs processRows from index.js on a chunk
-  function runWorker(chunk, workerIdx) {
-    return new Promise((resolve, reject) => {
-      const outputFile = path.join(tempDir, `output_worker_${workerIdx}.json`);
-      
-      // Try various ways to resolve the worker script path
-      const possiblePaths = [
-        path.join(process.execPath, '..', 'snapshot', 'index.js'),
-        path.join(__dirname, 'index.js'),
-        path.join(process.cwd(), 'index.js'),
-        './index.js'
-      ];
-      
-      let workerPath = null;
-      for (const p of possiblePaths) {
+    // Worker function: runs processRows from index.js on a chunk
+    function runWorker(chunk, workerIdx) {
+      return new Promise((resolve, reject) => {
+        const outputFile = path.join(tempDir, `output_worker_${workerIdx}.json`);
+
+        // Try various ways to resolve the worker script path
+        const possiblePaths = [
+          path.join(process.execPath, '..', 'snapshot', 'index.js'),
+          path.join(__dirname, 'index.js'),
+          path.join(process.cwd(), 'index.js'),
+          './index.js',
+        ];
+
+        let workerPath = null;
+        for (const p of possiblePaths) {
+          try {
+            require.resolve(p);
+            workerPath = p;
+            break;
+          } catch (e) {
+            continue;
+          }
+        }
+
+        if (!workerPath) {
+          throw new Error('Could not resolve worker script path. Tried:\n' + possiblePaths.join('\n'));
+        }
+
+        // Log the resolved path for debugging
+        log(`Starting worker ${workerIdx} with script: ${workerPath}`);
+
+        const worker = new Worker(workerPath, {
+          workerData: {rows: chunk, extendedTitles, outputFile, headless: headlessFlag},
+        });
+        worker.on('message', resolve);
+        worker.on('error', reject);
+        worker.on('exit', (code) => {
+          if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`));
+        });
+      });
+    }
+
+    // Run all workers in parallel
+    await Promise.all(nonEmptyChunks.map((chunk, i) => runWorker(chunk, i)));
+    console.log('All workers finished. Collecting results...');
+
+    // Collect all worker JSON outputs
+    const workerJsonFiles = await fs.readdir(tempDir);
+    let mergedResults = [];
+    for (const file of workerJsonFiles) {
+      if (file.endsWith('.json')) {
+        const data = await fs.readFile(path.join(tempDir, file), 'utf8');
         try {
-          require.resolve(p);
-          workerPath = p;
-          break;
+          const arr = JSON.parse(data);
+          if (Array.isArray(arr)) mergedResults = mergedResults.concat(arr);
         } catch (e) {
-          continue;
+          console.error(`Failed to parse ${file}: ${e.message}`);
         }
       }
-      
-      if (!workerPath) {
-        throw new Error('Could not resolve worker script path. Tried:\n' + possiblePaths.join('\n'));
-      }
-      
-      // Log the resolved path for debugging
-      log(`Starting worker ${workerIdx} with script: ${workerPath}`);
-      
-      const worker = new Worker(workerPath, {
-        workerData: {rows: chunk, extendedTitles, outputFile, headless: headlessFlag},
-      });
-      worker.on('message', resolve);
-      worker.on('error', reject);
-      worker.on('exit', (code) => {
-        if (code !== 0) reject(new Error(`Worker stopped with exit code ${code}`));
-      });
-    });
-  }
-
-  // Run all workers in parallel
-  await Promise.all(nonEmptyChunks.map((chunk, i) => runWorker(chunk, i)));
-  console.log('All workers finished. Collecting results...');
-
-  // Collect all worker JSON outputs
-  const workerJsonFiles = await fs.readdir(tempDir);
-  let mergedResults = [];
-  for (const file of workerJsonFiles) {
-    if (file.endsWith('.json')) {
-      const data = await fs.readFile(path.join(tempDir, file), 'utf8');
-      try {
-        const arr = JSON.parse(data);
-        if (Array.isArray(arr)) mergedResults = mergedResults.concat(arr);
-      } catch (e) {
-        console.error(`Failed to parse ${file}: ${e.message}`);
-      }
     }
-  }
 
-  // Generate timestamp as in index.js
-  const now = new Date();
-  const pad = (n) => n.toString().padStart(2, '0');
-  const ts = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear().toString().slice(-2)}-${pad(now.getHours())}-${pad(
-    now.getMinutes()
-  )}`;
-  const jsonFile = path.join(outputDir, `results-${ts}.json`);
-  const xlsxFile = path.join(outputDir, `results-${ts}.xlsx`);
+    // Generate timestamp as in index.js
+    const now = new Date();
+    const pad = (n) => n.toString().padStart(2, '0');
+    const ts = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear().toString().slice(-2)}-${pad(now.getHours())}-${pad(
+      now.getMinutes()
+    )}`;
+    const jsonFile = path.join(outputDir, `results-${ts}.json`);
+    const xlsxFile = path.join(outputDir, `results-${ts}.xlsx`);
 
-  // Re-apply cell_1 mapping and cleanup logic as in index.js
-  // Preserve all original input fields from inputRows in mergedResults
-  const inputFieldNames = Object.keys(inputRows[0] || {});
-  mergedResults = mergedResults.map((r) => {
-    let updated = {...r};
-    // Add missing input fields from inputRows if not present
-    inputFieldNames.forEach((field) => {
-      if (!(field in updated) && field !== 'cell_1') {
-        updated[field] = '';
+    // Re-apply cell_1 mapping and cleanup logic as in index.js
+    // Preserve all original input fields from inputRows in mergedResults
+    const inputFieldNames = Object.keys(inputRows[0] || {});
+    mergedResults = mergedResults.map((r) => {
+      let updated = {...r};
+      // Add missing input fields from inputRows if not present
+      inputFieldNames.forEach((field) => {
+        if (!(field in updated) && field !== 'cell_1') {
+          updated[field] = '';
+        }
+      });
+      if ((updated.individualDebtor === undefined || updated.individualDebtor === '') && updated.cell_1) {
+        updated.individualDebtor = updated.cell_1.replace(/^\s+|\s+$/g, '');
       }
+      delete updated.cell_1;
+      return updated;
     });
-    if ((updated.individualDebtor === undefined || updated.individualDebtor === '') && updated.cell_1) {
-      updated.individualDebtor = updated.cell_1.replace(/^\s+|\s+$/g, '');
-    }
-    delete updated.cell_1;
-    return updated;
-  });
 
-  // Save merged results as JSON in output folder
-  await fs.writeFile(jsonFile, JSON.stringify(mergedResults, null, 2));
-  console.log(`Parallel results saved to ${jsonFile}`);
+    // Save merged results as JSON in output folder
+    await fs.writeFile(jsonFile, JSON.stringify(mergedResults, null, 2));
+    console.log(`Parallel results saved to ${jsonFile}`);
 
-  // Export merged results to XLSX in output folder using index.js logic
-  const {exportToXLSX} = require('./index.js');
-  await exportToXLSX(mergedResults, extendedTitles, xlsxFile);
-  console.log(`Parallel XLSX saved to ${xlsxFile}`);
-  const endTime = new Date();
-  const durationMs = endTime - startTime;
-  const durationSec = Math.floor(durationMs / 1000);
-  const durationMin = Math.floor(durationSec / 60);
-  const durationStr = durationMin > 0 ? `${durationMin}m ${durationSec % 60}s` : `${durationSec}s`;
-  console.log(`[${formatDate(endTime)}] Parallel run finished`);
-  console.log(`Total execution time: ${durationStr}`);
+    // Export merged results to XLSX in output folder using index.js logic
+    const {exportToXLSX} = require('./index.js');
+    await exportToXLSX(mergedResults, extendedTitles, xlsxFile);
+    console.log(`Parallel XLSX saved to ${xlsxFile}`);
+    const endTime = new Date();
+    const durationMs = endTime - startTime;
+    const durationSec = Math.floor(durationMs / 1000);
+    const durationMin = Math.floor(durationSec / 60);
+    const durationStr = durationMin > 0 ? `${durationMin}m ${durationSec % 60}s` : `${durationSec}s`;
+    console.log(`[${await formatDate(endTime)}] Parallel run finished`);
+    console.log(`Total execution time: ${durationStr}`);
   } catch (error) {
     await logError(error, 'Error in parallel run');
     process.exit(1);
