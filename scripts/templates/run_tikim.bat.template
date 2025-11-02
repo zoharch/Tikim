@@ -1,0 +1,193 @@
+@echo off
+setlocal enabledelayedexpansion
+cls
+
+rem Configure color codes
+set "GREEN=0A"
+set "YELLOW=0E"
+set "RED=0C"
+set "WHITE=07"
+
+rem Show loading message
+color %YELLOW%
+echo Loading Tikim...
+echo ============================================
+
+rem Ensure browser path is set
+set PLAYWRIGHT_BROWSERS_PATH=%~dp0.local-browsers
+if not exist "%PLAYWRIGHT_BROWSERS_PATH%" (
+    color %RED%
+    echo Error: Browser directory not found at: %PLAYWRIGHT_BROWSERS_PATH%
+    echo.
+    pause
+    exit /b 1
+)
+
+rem Show starting message
+color %YELLOW%
+echo Starting tikim.exe in headless mode...
+echo.
+
+rem Run tikim and show spinner animation
+set "SPINNER=-\|/"
+
+rem Start tikim in background and capture PID
+start /B "" cmd /c tikim.exe --headless ^> output.tmp 2^>^&1
+for /f "tokens=2" %%a in ('tasklist /v /fi "imagename eq tikim.exe" /fo list ^| find /i "PID:"') do set TIKIM_PID=%%a
+
+:spinner_loop
+for /L %%i in (0,1,3) do (
+    if exist output.tmp (
+        type output.tmp
+        del output.tmp 2>nul
+    )
+    <nul set /p ".=Processing... !SPINNER:~%%i,1!"
+    >nul timeout /t 1 /nobreak
+    <nul set /p ".=^H^H^H^H^H^H^H^H^H^H^H^H^H^H"
+    
+    rem Check if process is still running
+    tasklist /fi "pid eq %TIKIM_PID%" /fo csv 2>nul | find /i "tikim.exe" >nul
+    if errorlevel 1 goto :process_done
+)
+goto :spinner_loop
+
+:process_done
+if exist output.tmp (
+    type output.tmp
+    del output.tmp 2>nul
+)
+echo.
+echo.
+
+rem Get exit code from tikim process
+for /f "tokens=2 delims==" %%a in ('wmic process where "ProcessId=%TIKIM_PID%" get ExitCode /value 2^>nul') do set EXIT_CODE=%%a
+if "%EXIT_CODE%"=="" set EXIT_CODE=1
+
+rem Ensure all tikim processes are cleaned up
+taskkill /F /IM tikim.exe /T >nul 2>&1
+
+:process_complete
+set EXIT_CODE=%ERRORLEVEL%
+
+rem If error occurred, pause to see the error
+if not %EXIT_CODE% equ 0 (
+    color %RED%
+    echo.
+    echo Error running tikim.exe (Exit code: %EXIT_CODE%)
+    echo Please check the error message above.
+    echo.
+    pause
+)
+
+if %EXIT_CODE% equ 0 (
+    rem Success - green text
+    color %GREEN%
+    echo.
+    echo ============================================
+    echo Tikim finished successfully!
+    
+    rem Find and display the latest result files
+    for /f "tokens=*" %%f in ('dir /b /o-d "%~dp0output\\results-*.xlsx" 2^>nul') do (
+        set "LATEST_XLSX=%%f"
+        goto :found_xlsx
+    )
+    echo No XLSX results found!
+    goto :after_xlsx
+    
+    :found_xlsx
+    echo.
+    echo Results saved to: %~dp0output\\!LATEST_XLSX!
+    
+    rem Processing time already shown in real-time output
+    
+    echo Opening result file...
+    start "" "%~dp0output\\!LATEST_XLSX!"
+    
+    :after_xlsx
+) else (
+    rem Error - red text
+    color %RED%
+    echo.
+    echo ============================================
+    echo Tikim exited with errors (exit code %EXIT_CODE%)
+    echo.
+    echo Checking logs directory...
+    
+    rem Find latest log file
+    for /f "tokens=*" %%f in ('dir /b /o-d "%~dp0logs\\*.log" 2^>nul') do (
+        set "LATEST_LOG=%%f"
+        goto :found_log
+    )
+    echo No log files found!
+    goto :after_log
+    
+    :found_log
+    echo.
+    echo Latest log file: %~dp0logs\\!LATEST_LOG!
+    echo Showing last 50 lines:
+    echo.
+    type "%~dp0logs\\!LATEST_LOG!" | more
+    
+    :after_log
+    echo.
+    pause
+)
+
+echo.
+echo ============================================
+if %EXIT_CODE% equ 0 (
+    color %GREEN%
+    echo.
+    echo  ✓ TIKIM COMPLETED SUCCESSFULLY! ✓
+    echo  ================================
+    echo.
+    echo  What happened:
+    echo  - All processing completed successfully
+    echo  - Results have been saved to Excel file
+    echo  - Opening the results file automatically...
+    echo.
+    
+    rem Find and open the latest Excel file
+    for /f "tokens=*" %%f in ('dir /b /o-d "%~dp0output\results-*.xlsx" 2^>nul') do (
+        echo  Results file: %%f
+        start "" "%~dp0output\%%f"
+        goto :end_msg
+    )
+    
+    :end_msg
+    echo.
+    echo  Next steps:
+    echo  - Review the opened Excel file
+    echo  - Check output folder for all results: %~dp0output
+    echo  - Run again with different input if needed
+    echo.
+) else (
+    color %RED%
+    echo.
+    echo  ⚠ TIKIM ENCOUNTERED AN ERROR ⚠
+    echo  ============================
+    echo.
+    echo  What happened:
+    echo  - Program encountered an error (Code: %EXIT_CODE%)
+    echo  - Check the error messages above
+    echo  - Log files available in: %~dp0logs
+    echo.
+    echo  Next steps:
+    echo  - Review error messages above
+    echo  - Check input files are correct
+    echo  - Try running the program again
+    echo.
+)
+
+color %WHITE%
+echo ============================================
+echo.
+if %EXIT_CODE% equ 0 (
+    color %GREEN%
+    echo Press Enter to close this window - your results file is already open...
+) else (
+    color %RED%
+    echo Press Enter to close this window after reviewing the errors...
+)
+set /p dummy=""
+exit /b %EXIT_CODE%

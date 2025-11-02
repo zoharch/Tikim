@@ -64,14 +64,9 @@ async function main() {
         console.log('No example.xlsx found in input directory, skipping...');
     }
 
-    // Create run script that sets the browser path
-    const batchContent = `@echo off
-set PLAYWRIGHT_BROWSERS_PATH=%~dp0.local-browsers
-tikim.exe --headless
-pause
-echo hit any key to exit...
-pause
-exit`;
+    // Read the batch script template
+    const templatePath = path.join(__dirname, 'templates', 'run_tikim.bat.template');
+    const batchContent = await fs.readFile(templatePath, 'utf8');
     
     await fs.writeFile(path.join(distDir, 'run_tikim.bat'), batchContent);
 
