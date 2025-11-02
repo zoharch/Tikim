@@ -13,7 +13,8 @@
         "test": "pnpm exec playwright test",
         "install-browsers": "pnpm exec playwright install",
         "build:dist": "node scripts/build-dist.js",
-        "build:exe": "pkg . --targets node18-win-x64 --output dist/tikim.exe"
+        "build:exe": "pkg . --targets node18-win-x64 --output dist/tikim.exe",
+        "prepare:release": "node scripts/prepare-release.js"
     },
     "pkg": {
         "scripts": [

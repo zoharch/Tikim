@@ -55,14 +55,12 @@ function cleanCell(val) {
 }
 
 function mapRow(row, titles) {
-  // Heuristic mapping
+  // Heuristic mapping - always return an object with these keys
   const keys = ['caseID', 'caseName', 'personalID'];
-  const mapped = {};
+  const mapped = {caseID: '', caseName: '', personalID: ''};
   for (let i = 0; i < keys.length; i++) {
     mapped[keys[i]] = cleanCell(row[i] || '');
   }
-  // If all values are empty, fallback to original row
-  if (Object.values(mapped).every((v) => !v)) return row.map(cleanCell);
   return mapped;
 }
 
@@ -80,7 +78,9 @@ async function readLatestXLSXtoJSON(inputDir) {
   };
   const dataRows = rows.slice(1); // skip header, include all data rows
   const errors = [];
-  const mappedRows = dataRows.map((row, idx) => {
+  const mappedRows = [];
+
+  dataRows.forEach((row, idx) => {
     const mapped = mapRow(row, Object.keys(titles));
     // Clean and validate personalID
     let rawId = (mapped.personalID || '').toString();
@@ -91,6 +91,12 @@ async function readLatestXLSXtoJSON(inputDir) {
       cleanedId = '0' + cleanedId;
     }
     mapped.personalID = cleanedId;
+
+    // Skip entirely empty ID cells (do not include empty rows)
+    if (!cleanedId) {
+      return; // skip this row
+    }
+
     // Validate
     if (!isValidIsraeliID(cleanedId)) {
       // Only log error if not a padded 8-digit ID
@@ -98,11 +104,14 @@ async function readLatestXLSXtoJSON(inputDir) {
         errors.push({row: idx + 2, personalID: rawId, cleanedID: cleanedId, error: 'Invalid Israeli ID'});
       }
     }
-    return mapped;
+
+    mappedRows.push(mapped);
   });
+
   if (errors.length > 0) {
     console.error('Invalid IDs found:', errors);
   }
+
   return {file, rows: mappedRows, titles, errors};
 }
 

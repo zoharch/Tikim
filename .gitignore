@@ -1,18 +1,3 @@
 node_modules/
 *.log
-.env
-*.env
-.DS_Store
-Thumbs.db
-test-results/
-playwright-report/
-playwright/.cache/
-debt_check_results.*
-.vscode/
-debt_check_results.json
-ids.txt
-debt_check_results.xlsx
-error_log.txt
-ids copy.txt
 dist/
-.nexe/

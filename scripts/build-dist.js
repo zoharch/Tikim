@@ -51,7 +51,7 @@ async function main() {
         const dirPath = path.join(distDir, dir);
         await fs.mkdir(dirPath, { recursive: true });
         // Add .gitkeep to ensure directories are included in the package
-        await fs.writeFile(path.join(dirPath, '.gitkeep'), '');
+        //await fs.writeFile(path.join(dirPath, '.gitkeep'), '');
     }
 
     // Copy example input file if it exists
@@ -68,7 +68,10 @@ async function main() {
     const batchContent = `@echo off
 set PLAYWRIGHT_BROWSERS_PATH=%~dp0.local-browsers
 tikim.exe --headless
-pause`;
+pause
+echo hit any key to exit...
+pause
+exit`;
     
     await fs.writeFile(path.join(distDir, 'run_tikim.bat'), batchContent);
 
