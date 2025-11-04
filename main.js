@@ -4,6 +4,26 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs/promises');
 
+// Ensure logs directory is created only once
+let logDirInitialized = false;
+const logDirPath = path.join(__dirname, 'logs');
+
+async function ensureLogDir() {
+  if (!logDirInitialized) {
+    try {
+      await fs.mkdir(logDirPath, {recursive: true});
+      logDirInitialized = true;
+    } catch (err) {
+      // If directory exists, ignore error
+      if (err.code !== 'EEXIST') {
+        console.error(`Failed to create log directory: ${err.message}`);
+      } else {
+        logDirInitialized = true;
+      }
+    }
+  }
+}
+
 // Create logger function that writes to both console and file
 async function log(message, type = 'info') {
   const timestamp = new Date().toISOString();
@@ -11,9 +31,8 @@ async function log(message, type = 'info') {
   console.log(logMessage);
 
   try {
-    const logDir = path.join(__dirname, 'logs');
-    await fs.mkdir(logDir, {recursive: true});
-    const logFile = path.join(logDir, `tikim-${new Date().toISOString().split('T')[0]}.log`);
+    await ensureLogDir();
+    const logFile = path.join(logDirPath, `tikim-${new Date().toISOString().split('T')[0]}.log`);
     await fs.appendFile(logFile, logMessage + '\n');
   } catch (err) {
     console.error(`Failed to write to log file: ${err.message}`);
@@ -253,6 +272,7 @@ async function runParallel() {
     const durationStr = durationMin > 0 ? `${durationMin}m ${durationSec % 60}s` : `${durationSec}s`;
     console.log(`[${await formatDate(endTime)}] Parallel run finished`);
     console.log(`Total execution time: ${durationStr}`);
+    process.exit(0);
   } catch (error) {
     await logError(error, 'Error in parallel run');
     process.exit(1);

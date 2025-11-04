@@ -1,87 +1,84 @@
 const fs = require('fs/promises');
 const path = require('path');
-const { execSync } = require('child_process');
-const { chromium } = require('playwright');
+const {execSync} = require('child_process');
+const {chromium} = require('playwright');
 
 async function copyDirectory(src, dest) {
-    await fs.mkdir(dest, { recursive: true });
-    const entries = await fs.readdir(src, { withFileTypes: true });
+  await fs.mkdir(dest, {recursive: true});
+  const entries = await fs.readdir(src, {withFileTypes: true});
 
-    for (const entry of entries) {
-        const srcPath = path.join(src, entry.name);
-        const destPath = path.join(dest, entry.name);
+  for (const entry of entries) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
 
-        if (entry.isDirectory()) {
-            await copyDirectory(srcPath, destPath);
-        } else {
-            await fs.copyFile(srcPath, destPath);
-        }
+    if (entry.isDirectory()) {
+      await copyDirectory(srcPath, destPath);
+    } else {
+      await fs.copyFile(srcPath, destPath);
     }
+  }
 }
 
 async function main() {
-    const rootDir = path.join(__dirname, '..');
-    const distDir = path.join(rootDir, 'dist');
+  const rootDir = path.join(__dirname, '..');
+  const distDir = path.join(rootDir, 'dist');
 
-    console.log('Creating distribution package...');
+  console.log('Creating distribution package...');
 
-    // Create dist directory
-    await fs.mkdir(distDir, { recursive: true });
+  // Create dist directory
+  await fs.mkdir(distDir, {recursive: true});
 
-    // Install Playwright browsers
-    console.log('Installing Playwright browsers...');
-    execSync('pnpm run install-browsers', { stdio: 'inherit' });
+  // Install Playwright browsers
+  console.log('Installing Playwright browsers...');
+  execSync('pnpm run install-browsers', {stdio: 'inherit'});
 
-    // Get Playwright browser path
-    const executablePath = chromium.executablePath();
-    const browsersPath = path.dirname(path.dirname(path.dirname(executablePath)));
-    
-    // Copy Playwright browsers to dist
-    console.log('Copying Playwright browsers...');
-    const distBrowsersPath = path.join(distDir, '.local-browsers');
-    await copyDirectory(browsersPath, distBrowsersPath);
+  // Get Playwright browser path
+  const executablePath = chromium.executablePath();
+  const browsersPath = path.dirname(path.dirname(path.dirname(executablePath)));
 
-    // Build the executable
-    console.log('Building executable...');
-    execSync('pnpm run build:exe', { stdio: 'inherit' });
+  // Copy Playwright browsers to dist
+  console.log('Copying Playwright browsers...');
+  const distBrowsersPath = path.join(distDir, '.local-browsers');
+  await copyDirectory(browsersPath, distBrowsersPath);
 
-    // Create and populate necessary directories with .gitkeep files
-    const dirs = ['input', 'output', 'temp', 'logs'];
-    for (const dir of dirs) {
-        const dirPath = path.join(distDir, dir);
-        await fs.mkdir(dirPath, { recursive: true });
-        // Add .gitkeep to ensure directories are included in the package
-        //await fs.writeFile(path.join(dirPath, '.gitkeep'), '');
-    }
+  // Build the executable
+  console.log('Building executable...');
+  execSync('pnpm run build:exe', {stdio: 'inherit'});
 
-    // Copy example input file if it exists
-    try {
-        const exampleFile = path.join(rootDir, 'input', 'example.xlsx');
-        const destFile = path.join(distDir, 'input', 'example.xlsx');
-        await fs.copyFile(exampleFile, destFile);
-        console.log('Copied example input file to dist/input/');
-    } catch (err) {
-        console.log('No example.xlsx found in input directory, skipping...');
-    }
+  // Create and populate necessary directories with .gitkeep files
+  const dirs = ['input', 'output', 'temp', 'logs'];
+  for (const dir of dirs) {
+    const dirPath = path.join(distDir, dir);
+    await fs.mkdir(dirPath, {recursive: true});
+    // Add .gitkeep to ensure directories are included in the package
+    //await fs.writeFile(path.join(dirPath, '.gitkeep'), '');
+  }
 
-    // Read the batch script template
-    const templatePath = path.join(__dirname, 'templates', 'run_tikim.bat.template');
-    const batchContent = await fs.readFile(templatePath, 'utf8');
-    
-    await fs.writeFile(path.join(distDir, 'run_tikim.bat'), batchContent);
+  // Copy example input file if it exists
+  try {
+    const exampleFile = path.join(rootDir, 'input', 'example.xlsx');
+    const destFile = path.join(distDir, 'input', 'example.xlsx');
+    await fs.copyFile(exampleFile, destFile);
+    console.log('Copied example input file to dist/input/');
+  } catch (err) {
+    console.log('No example.xlsx found in input directory, skipping...');
+  }
 
-    // Copy README if exists
-    try {
-        await fs.copyFile(
-            path.join(rootDir, 'README.md'),
-            path.join(distDir, 'README.md')
-        );
-    } catch (err) {
-        console.log('No README.md found, skipping...');
-    }
+  // Read the batch script template
+  const templatePath = path.join(__dirname, 'templates', 'run_tikim.bat.template');
+  const batchContent = await fs.readFile(templatePath, 'utf8');
 
-    console.log('Distribution package created successfully!');
-    console.log(`
+  await fs.writeFile(path.join(distDir, 'סטטוס_חדלפ.bat'), batchContent);
+
+  // Copy README if exists
+  try {
+    await fs.copyFile(path.join(rootDir, 'README.md'), path.join(distDir, 'README.md'));
+  } catch (err) {
+    console.log('No README.md found, skipping...');
+  }
+
+  console.log('Distribution package created successfully!');
+  console.log(`
 Distribution package is ready in the 'dist' folder.
 Contents:
 - tikim.exe (Main executable)
