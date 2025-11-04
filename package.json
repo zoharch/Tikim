@@ -31,7 +31,9 @@
             "temp/**/*",
             "logs/**/*"
         ],
-        "targets": ["node18-win-x64"],
+        "targets": [
+            "node18-win-x64"
+        ],
         "outputPath": "dist"
     },
     "keywords": [
@@ -50,6 +52,7 @@
     "dependencies": {
         "@playwright/test": "1.55.0",
         "exceljs": "4.4.0",
+        "winston": "3.18.3",
         "xlsx": "0.18.5"
     }
 }
