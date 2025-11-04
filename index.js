@@ -112,16 +112,49 @@ class InsolvencyChecker {
 
       // Extract table headers and values as individual props
       let detailProps = {};
+      // Wait for the value row to exist before extracting
+      // Wait for the data row to appear in the value table (tbody > tr)
+      await this.page.waitForSelector('#lstData_grdDataList > tbody > tr', {timeout: 10000}).catch(() => {});
       let rowDetails = await this.page.evaluate(() => {
-        const table = document.querySelector('#lstData_grdDataList');
-        if (table && table.rows.length > 0) {
-          const firstRow = table.rows[0];
-          const headers = Array.from(table.parentElement.querySelectorAll('tr')[0].cells).map((cell) => cell.innerText.trim());
-          const values = Array.from(firstRow.cells).map((cell) => cell.innerText.trim());
-          return {headers, values};
+        // Get headers from the first table
+        const headerTable = document.querySelector('#lstData_grdKoteret');
+        let headers = [];
+        let headerTableHTML = '';
+        let headerRowCount = 0;
+        if (headerTable) {
+          headerTableHTML = headerTable.outerHTML;
+          const headerRow = headerTable.querySelector('tr');
+          if (headerRow) {
+            headerRowCount = 1;
+            headers = Array.from(headerRow.querySelectorAll('td')).map((cell) => cell.innerText.trim());
+          }
         }
-        return {headers: [], values: []};
+        // Get values from the second table
+        const valueTable = document.querySelector('#lstData_grdDataList');
+        let values = [];
+        let valueTableHTML = '';
+        let valueRowCount = 0;
+        if (valueTable) {
+          valueTableHTML = valueTable.outerHTML;
+          const valueRows = valueTable.querySelectorAll('tbody > tr');
+          valueRowCount = valueRows.length;
+          if (valueRows.length > 0) {
+            const valueRow = valueRows[0];
+            values = Array.from(valueRow.querySelectorAll('td')).map((cell) => {
+              const a = cell.querySelector('a');
+              if (a) {
+                return a.innerText.trim();
+              } else {
+                return cell.innerText.trim();
+              }
+            });
+          }
+        }
+        return {headers, values, valueTableHTML, headerTableHTML, headerRowCount, valueRowCount};
       });
+      // Only log extracted headers and values (essential info)
+      console.log('Extracted headers:', rowDetails.headers);
+      console.log('Extracted values:', rowDetails.values);
       // Map Hebrew headers to English keys
       const hebrewToEnglish = {
         'מספר תיק': 'caseID',
