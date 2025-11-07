@@ -24,7 +24,7 @@ set "WHITE=07"
 
 rem Show loading message
 color %YELLOW%
-echo Loading Tikim (npm start:headless)...
+echo Loading Tikim (npm start:parallel)...
 echo ============================================
 
 
@@ -36,12 +36,12 @@ echo Insert new xlsx file into the opened 'input' folder.
 echo Make sure to close any open Excel files before proceeding.
 echo.
 set /p dummy="Press Enter to continue..."
-echo Starting Tikim via npm run start:headless...
+echo Starting Tikim via npm run start:parallel...
 echo.
 
 
 rem Run npm script and capture output in real time
-call npm run start:headless
+call npm run start:parallel
 @echo off
 set EXIT_CODE=%ERRORLEVEL%
 

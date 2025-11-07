@@ -1,0 +1,1 @@
+node generate_israel_ids.js > israel_ids.txt
