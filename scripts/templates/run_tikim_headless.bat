@@ -102,13 +102,26 @@ if %EXIT_CODE% equ 0 (
     color %RED%
     echo Press Enter to close this window after reviewing the errors...
 )
-set /p dummy=""
-exit /b %EXIT_CODE%
 
-pause
+goto :final_prompt
 
 :FINAL
 @echo off
 @REM restore location
 popd
 @echo on
+exit /b %EXIT_CODE%
+
+:final_prompt
+color %WHITE%
+echo ============================================
+echo.
+if %EXIT_CODE% equ 0 (
+    color %GREEN%
+    echo Press Enter to close this window - your results file is already open...
+) else (
+    color %RED%
+    echo Press Enter to close this window after reviewing the errors...
+)
+set /p dummy=""
+goto :FINAL
