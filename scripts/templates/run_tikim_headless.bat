@@ -22,6 +22,8 @@ set "YELLOW=0E"
 set "RED=0C"
 set "WHITE=07"
 
+set PLAYWRIGHT_HEADLESS=1
+
 rem Show loading message
 color %YELLOW%
 echo Loading Tikim (npm start:parallel)...
