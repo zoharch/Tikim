@@ -259,22 +259,31 @@ async function runParallel() {
 
     // Save merged results as JSON in output folder
     await fs.writeFile(jsonFile, JSON.stringify(mergedResults, null, 2));
-    console.log(`Parallel results saved to ${jsonFile}`);
+    await log(`Parallel results saved to ${jsonFile}`);
 
     // Export merged results to XLSX in output folder using index.js logic
     const {exportToXLSX} = require('./index.js');
     await exportToXLSX(mergedResults, extendedTitles, xlsxFile);
-    console.log(`Parallel XLSX saved to ${xlsxFile}`);
+    await log(`Parallel XLSX saved to ${xlsxFile}`);
     const endTime = new Date();
     const durationMs = endTime - startTime;
     const durationSec = Math.floor(durationMs / 1000);
     const durationMin = Math.floor(durationSec / 60);
     const durationStr = durationMin > 0 ? `${durationMin}m ${durationSec % 60}s` : `${durationSec}s`;
-    console.log(`[${await formatDate(endTime)}] Parallel run finished`);
-    console.log(`Total execution time: ${durationStr}`);
+    const endMsg = `[${await formatDate(endTime)}] Parallel run finished`;
+    const durationMsg = `Total execution time: ${durationStr}`;
+    console.log(endMsg);
+    console.log(durationMsg);
+    await log(endMsg);
+    await log(durationMsg);
     process.exit(0);
   } catch (error) {
     await logError(error, 'Error in parallel run');
+    try {
+      await ensureLogDir();
+      const logFile = path.join(logDirPath, `tikim-${new Date().toISOString().split('T')[0]}.log`);
+      await fs.appendFile(logFile, `[${new Date().toISOString()}] ERROR: ${error && error.message ? error.message : error}\n`);
+    } catch (e) {}
     process.exit(1);
   }
 }
