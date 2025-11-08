@@ -148,17 +148,27 @@ async function runParallel() {
     const outputDir = await ensureDir('output', __dirname);
     const tempDir = await ensureDir('temp', __dirname);
     // Clean temp directory before execution
-    const tempFiles = await fs.readdir(tempDir);
-    for (const file of tempFiles) {
-      const filePath = path.join(tempDir, file);
-      try {
-        await fs.unlink(filePath);
-        await log(`Cleaned temporary file: ${filePath}`);
-      } catch (err) {
-        await log(`Failed to delete ${filePath}: ${err.message}`, 'error');
+    try {
+      const tempFiles = await fs.readdir(tempDir);
+      for (const file of tempFiles) {
+        const filePath = path.join(tempDir, file);
+        try {
+          await fs.unlink(filePath);
+          await log(`Cleaned temporary file: ${filePath}`);
+        } catch (err) {
+          await log(`Failed to delete ${filePath}: ${err.message}`, 'error');
+        }
       }
+    } catch (err) {
+      await log(`Failed to read temp directory: ${err.message}`, 'error');
     }
-    const {rows: inputRows, titles: extendedTitles} = await readLatestXLSXtoJSON(inputDir);
+    let inputRows, extendedTitles;
+    try {
+      ({rows: inputRows, titles: extendedTitles} = await readLatestXLSXtoJSON(inputDir));
+    } catch (err) {
+      await logError(err, 'Error reading input Excel file');
+      process.exit(1);
+    }
     const chunkSize = Math.ceil(inputRows.length / NUM_WORKERS);
     const chunks = Array.from({length: NUM_WORKERS}, (_, i) => inputRows.slice(i * chunkSize, (i + 1) * chunkSize));
     // Only keep non-empty chunks
@@ -216,18 +226,29 @@ async function runParallel() {
     console.log('All workers finished. Collecting results...');
 
     // Collect all worker JSON outputs
-    const workerJsonFiles = await fs.readdir(tempDir);
     let mergedResults = [];
-    for (const file of workerJsonFiles) {
-      if (file.endsWith('.json')) {
-        const data = await fs.readFile(path.join(tempDir, file), 'utf8');
-        try {
-          const arr = JSON.parse(data);
-          if (Array.isArray(arr)) mergedResults = mergedResults.concat(arr);
-        } catch (e) {
-          console.error(`Failed to parse ${file}: ${e.message}`);
+    try {
+      const workerJsonFiles = await fs.readdir(tempDir);
+      for (const file of workerJsonFiles) {
+        if (file.endsWith('.json')) {
+          let data;
+          try {
+            data = await fs.readFile(path.join(tempDir, file), 'utf8');
+          } catch (e) {
+            await log(`Failed to read ${file}: ${e.message}`, 'error');
+            continue;
+          }
+          try {
+            const arr = JSON.parse(data);
+            if (Array.isArray(arr)) mergedResults = mergedResults.concat(arr);
+          } catch (e) {
+            await log(`Failed to parse ${file}: ${e.message}`, 'error');
+          }
         }
       }
+    } catch (err) {
+      await logError(err, 'Error collecting worker outputs');
+      process.exit(1);
     }
 
     // Generate timestamp as in index.js
@@ -258,13 +279,21 @@ async function runParallel() {
     });
 
     // Save merged results as JSON in output folder
-    await fs.writeFile(jsonFile, JSON.stringify(mergedResults, null, 2));
-    await log(`Parallel results saved to ${jsonFile}`);
+    try {
+      await fs.writeFile(jsonFile, JSON.stringify(mergedResults, null, 2));
+      await log(`Parallel results saved to ${jsonFile}`);
+    } catch (err) {
+      await logError(err, 'Error saving merged JSON results');
+    }
 
     // Export merged results to XLSX in output folder using index.js logic
-    const {exportToXLSX} = require('./index.js');
-    await exportToXLSX(mergedResults, extendedTitles, xlsxFile);
-    await log(`Parallel XLSX saved to ${xlsxFile}`);
+    try {
+      const {exportToXLSX} = require('./index.js');
+      await exportToXLSX(mergedResults, extendedTitles, xlsxFile);
+      await log(`Parallel XLSX saved to ${xlsxFile}`);
+    } catch (err) {
+      await logError(err, 'Error exporting XLSX');
+    }
     const endTime = new Date();
     const durationMs = endTime - startTime;
     const durationSec = Math.floor(durationMs / 1000);
