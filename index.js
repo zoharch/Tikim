@@ -87,16 +87,21 @@ class InsolvencyChecker {
   }
 
   async init() {
-    console.log(`Initializing browser... Headless: ${this.headless}`);
-    this.browser = await chromium.launch({
-      headless: this.headless,
-      slowMo: 1000,
-    });
-    this.page = await this.browser.newPage();
-    this.page.setDefaultTimeout(30000);
-    console.log('Navigating to insolvency site...');
-    await this.page.goto(this.baseUrl);
-    await this.page.waitForLoadState('networkidle');
+    try {
+      console.log(`Initializing browser... Headless: ${this.headless}`);
+      this.browser = await chromium.launch({
+        headless: this.headless,
+        slowMo: 1000,
+      });
+      this.page = await this.browser.newPage();
+      this.page.setDefaultTimeout(30000);
+      console.log('Navigating to insolvency site...');
+      await this.page.goto(this.baseUrl);
+      await this.page.waitForLoadState('networkidle');
+    } catch (err) {
+      console.error('Error initializing browser or loading site:', err.message);
+      throw err;
+    }
   }
 
   async checkPersonId(personId) {
@@ -334,29 +339,60 @@ class InsolvencyChecker {
 
   async process(rows) {
     if (!this.browser || !this.page) {
-      await this.init();
+      try {
+        await this.init();
+      } catch (err) {
+        // If browser/page fails to init, return all errors
+        return rows.map((row, i) => {
+          let personId = row.personId || row['מספר מזהה'] || row.personalID || '';
+          return {personId, status: 'ERROR', error: 'Failed to initialize browser: ' + err.message};
+        });
+      }
     }
     const results = [];
     for (let i = 0; i < rows.length; i++) {
       let personId = rows[i].personId || rows[i]['מספר מזהה'] || rows[i].personalID || '';
       if (!personId) continue;
       console.log(`\nProcessing ${i + 1}/${rows.length}: ${personId}`);
-      await this.page.goto(this.baseUrl);
-      await this.page.waitForLoadState('networkidle');
-      const result = await this.checkPersonId(personId);
-      results.push(result);
+      try {
+        await this.page.goto(this.baseUrl);
+        await this.page.waitForLoadState('networkidle');
+        const result = await this.checkPersonId(personId);
+        results.push(result);
+      } catch (err) {
+        console.error(`Error processing ${personId}:`, err.message);
+        results.push({personId, status: 'ERROR', error: err.message});
+        // Optionally, try to recover the browser/page if navigation fails badly
+        // If page is closed/crashed, try to reopen
+        if (this.page && this.page.isClosed && this.page.isClosed()) {
+          try {
+            this.page = await this.browser.newPage();
+            this.page.setDefaultTimeout(30000);
+          } catch (e) {
+            console.error('Failed to recover page:', e.message);
+          }
+        }
+      }
       if (i < rows.length - 1) {
         console.log('Waiting before next request...');
-        await this.page.waitForTimeout(2000);
+        try {
+          await this.page.waitForTimeout(2000);
+        } catch (e) {
+          // Ignore wait errors
+        }
       }
     }
     return results;
   }
 
   async close() {
-    if (this.browser) {
-      await this.browser.close();
-      console.log('Browser closed');
+    try {
+      if (this.browser) {
+        await this.browser.close();
+        console.log('Browser closed');
+      }
+    } catch (err) {
+      console.error('Error closing browser:', err.message);
     }
   }
 }
@@ -493,6 +529,14 @@ async function exportToXLSX(results, extendedTitles, outputFile) {
     const month = now.getMonth();
     const year = now.getFullYear();
     // Helper to check if a date is in this month
+    // Open the XLSX file in the default application on Windows
+    if (process.platform === 'win32') {
+      try {
+        require('child_process').exec(`start "" "${outputFile}"`);
+      } catch (e) {
+        console.error('Failed to open XLSX file:', e.message);
+      }
+    }
     function isThisMonth(val) {
       if (!val) return false;
       let d = val;
@@ -592,46 +636,56 @@ async function exportToXLSX(results, extendedTitles, outputFile) {
 
 // Main processing function for worker and CLI
 async function processRows(rows, extendedTitles, outputFile) {
-  // Use englishToHebrew for column titles
-  const checker = new InsolvencyChecker();
-  let results = await checker.process(rows);
-  // Map cell_1 to individualDebtor if present and individualDebtor is missing or empty, then remove cell_1
-  results = results.map((r, idx) => {
-    let updated = {...r};
-    // Map cell_1 to individualDebtor if needed
-    if ((updated.individualDebtor === undefined || updated.individualDebtor === '') && updated.cell_1) {
-      updated.individualDebtor = updated.cell_1.replace(/^\s+|\s+$/g, '');
-    }
-    // Remove all cell_ fields and personId
-    Object.keys(updated).forEach((key) => {
-      if (/^cell_\d+$/.test(key) || key === 'personId') {
-        delete updated[key];
+  try {
+    // Use englishToHebrew for column titles
+    const checker = new InsolvencyChecker();
+    let results = await checker.process(rows);
+    // Map cell_1 to individualDebtor if present and individualDebtor is missing or empty, then remove cell_1
+    results = results.map((r, idx) => {
+      let updated = {...r};
+      // Map cell_1 to individualDebtor if needed
+      if ((updated.individualDebtor === undefined || updated.individualDebtor === '') && updated.cell_1) {
+        updated.individualDebtor = updated.cell_1.replace(/^\u0002+|\s+$/g, '');
       }
-    });
-    // Merge all original input fields into the result except personId
-    if (rows[idx]) {
-      for (const inputKey of Object.keys(rows[idx])) {
-        if (inputKey === 'personId') continue;
-        if (updated[inputKey] === undefined) {
-          updated[inputKey] = rows[idx][inputKey];
+      // Remove all cell_ fields and personId
+      Object.keys(updated).forEach((key) => {
+        if (/^cell_\d+$/.test(key) || key === 'personId') {
+          delete updated[key];
+          return;
+        }
+      });
+      // Merge all original input fields into the result except personId
+      if (rows[idx]) {
+        for (const inputKey of Object.keys(rows[idx])) {
+          if (inputKey === 'personId') continue;
+          if (updated[inputKey] === undefined) {
+            updated[inputKey] = rows[idx][inputKey];
+          }
         }
       }
+      // Remap all keys to Hebrew
+      const hebrewRow = {};
+      for (const key of Object.keys(updated)) {
+        const hebKey = englishToHebrew[key] || key;
+        hebrewRow[hebKey] = updated[key];
+      }
+      return hebrewRow;
+    });
+    if (outputFile.endsWith('.json')) {
+      await fs.writeFile(outputFile, JSON.stringify(results, null, 2));
+    } else {
+      await fs.writeFile(outputFile.replace('.xlsx', '.json'), JSON.stringify(results, null, 2));
+      console.log('Data length:', results.length);
+      await exportToXLSX(results, englishToHebrew, outputFile);
     }
-    // Remap all keys to Hebrew
-    const hebrewRow = {};
-    for (const key of Object.keys(updated)) {
-      const hebKey = englishToHebrew[key] || key;
-      hebrewRow[hebKey] = updated[key];
-    }
-    return hebrewRow;
-  });
-  if (outputFile.endsWith('.json')) {
-    await fs.writeFile(outputFile, JSON.stringify(results, null, 2));
-  } else {
-    await fs.writeFile(outputFile.replace('.xlsx', '.json'), JSON.stringify(results, null, 2));
-    await exportToXLSX(results, englishToHebrew, outputFile);
+    return results;
+  } catch (err) {
+    console.error('Error in processRows:', err.message);
+    return rows.map((row, i) => {
+      let personId = row.personId || row['מספר מזהה'] || row.personalID || '';
+      return {personId, status: 'ERROR', error: 'processRows error: ' + err.message};
+    });
   }
-  return results;
 }
 
 // Worker thread entry
@@ -662,98 +716,117 @@ if (isMainThread && require.main === module) {
       d.getMinutes()
     )}:${pad(d.getSeconds())}`;
   }
-  (async () => {
+
+  async function main() {
     const startTime = new Date();
     console.log(`[${formatDate(startTime)}] Headless run started`);
-    // Use literal require so pkg can statically include the file
-    const {readLatestXLSXtoJSON} = require('./io/readFile.js');
-    const inputDir = path.join(__dirname, 'input');
-    // Parse --outputDir=... from process.argv, default to output
-    let outputDir = 'output';
-    for (const arg of process.argv) {
-      if (arg.startsWith('--outputDir=')) {
-        outputDir = arg.split('=')[1];
-      }
-    }
-    outputDir = path.join(__dirname, outputDir);
-    await fs.mkdir(outputDir, {recursive: true});
-    const {file: inputFilePath, rows, titles: extendedTitles, errors: invalidIds} = await readLatestXLSXtoJSON(inputDir);
-    // Use input file name (without extension) for output file name
-    const inputBaseName = path.basename(inputFilePath, path.extname(inputFilePath));
-    let outputFile;
-    if (outputDir.endsWith(path.sep + 'output')) {
-      const now = new Date();
-      const pad = (n) => n.toString().padStart(2, '0');
-      const ts = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear().toString().slice(-2)}-${pad(now.getHours())}-${pad(
-        now.getMinutes()
-      )}`;
-      outputFile = path.join(outputDir, `${inputBaseName}-${ts}.xlsx`);
-    } else {
-      outputFile = path.join(outputDir, `${inputBaseName}.xlsx`);
-    }
-    // Update the console title to show process and output file name
-    setConsoleTitle(`בדיקת חדלות פירעון - ${path.basename(outputFile)}`);
-    // Create checker instance so we can close it after processing
-    const checker = new InsolvencyChecker();
-    let results = await checker.process(rows);
-    // Map cell_1 to individualDebtor if present and individualDebtor is missing or empty, then remove cell_1
-    results = results.map((r, idx) => {
-      let updated = {...r};
-      if ((updated.individualDebtor === undefined || updated.individualDebtor === '') && updated.cell_1) {
-        updated.individualDebtor = updated.cell_1.replace(/^+|\s+$/g, '');
-      }
-      Object.keys(updated).forEach((key) => {
-        if (/^cell_\d+$/.test(key) || key === 'personId') {
-          delete updated[key];
+    let checker = null;
+    try {
+      // Use literal require so pkg can statically include the file
+      const {readLatestXLSXtoJSON} = require('./io/readFile.js');
+      const inputDir = path.join(__dirname, 'input');
+      // Parse --outputDir=... from process.argv, default to output
+      let outputDir = 'output';
+      for (const arg of process.argv) {
+        if (arg.startsWith('--outputDir=')) {
+          outputDir = arg.split('=')[1];
         }
-      });
-      if (rows[idx]) {
-        for (const inputKey of Object.keys(rows[idx])) {
-          if (inputKey === 'personId') continue;
-          if (updated[inputKey] === undefined) {
-            updated[inputKey] = rows[idx][inputKey];
+      }
+      outputDir = path.join(__dirname, outputDir);
+      await fs.mkdir(outputDir, {recursive: true});
+      const {file: inputFilePath, rows, titles: extendedTitles, errors: invalidIds} = await readLatestXLSXtoJSON(inputDir);
+      // Use input file name (without extension) for output file name
+      const inputBaseName = path.basename(inputFilePath, path.extname(inputFilePath));
+      let outputFile;
+      if (outputDir.endsWith(path.sep + 'output')) {
+        const now = new Date();
+        const pad = (n) => n.toString().padStart(2, '0');
+        const ts = `${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear().toString().slice(-2)}-${pad(now.getHours())}-${pad(
+          now.getMinutes()
+        )}`;
+        outputFile = path.join(outputDir, `${inputBaseName}-${ts}.xlsx`);
+      } else {
+        outputFile = path.join(outputDir, `${inputBaseName}.xlsx`);
+      }
+      // Update the console title to show process and output file name
+      setConsoleTitle(`בדיקת חדלות פירעון - ${path.basename(outputFile)}`);
+      // Create checker instance so we can close it after processing
+      checker = new InsolvencyChecker();
+      let results = await checker.process(rows);
+      // Map cell_1 to individualDebtor if present and individualDebtor is missing or empty, then remove cell_1
+      results = results.map((r, idx) => {
+        let updated = {...r};
+        if ((updated.individualDebtor === undefined || updated.individualDebtor === '') && updated.cell_1) {
+          updated.individualDebtor = updated.cell_1.replace(/^\u0002+|\s+$/g, '');
+        }
+        Object.keys(updated).forEach((key) => {
+          if (/^cell_\d+$/.test(key) || key === 'personId') {
+            delete updated[key];
+            return;
+          }
+        });
+        if (rows[idx]) {
+          for (const inputKey of Object.keys(rows[idx])) {
+            if (inputKey === 'personId') continue;
+            if (updated[inputKey] === undefined) {
+              updated[inputKey] = rows[idx][inputKey];
+            }
           }
         }
-      }
-      const hebrewRow = {};
-      for (const key of Object.keys(updated)) {
-        const hebKey = englishToHebrew[key] || key;
-        hebrewRow[hebKey] = updated[key];
-      }
-      return hebrewRow;
-    });
-    if (outputFile.endsWith('.json')) {
-      await fs.writeFile(outputFile, JSON.stringify(results, null, 2));
-    } else {
-      await fs.writeFile(outputFile.replace('.xlsx', '.json'), JSON.stringify(results, null, 2));
-      await exportToXLSX(results, englishToHebrew, outputFile);
-    }
-    if (outputDir.endsWith(path.sep + 'output')) {
-      console.log(`Results saved to ${outputFile} and ${outputFile.replace('.xlsx', '.json')}`);
-    } else {
-      console.log(`Results saved to ${outputFile} and ${outputFile.replace('.xlsx', '.json')}`);
-    }
-    // Open the XLSX file in the default application on Windows
-    if (process.platform === 'win32') {
-      try {
-        require('child_process').exec(`start "" "${outputFile}"`);
-      } catch (e) {
-        console.error('Failed to open XLSX file:', e.message);
-      }
-    }
-    // Update the console title to indicate finished
-    setConsoleTitle(`בדיקת חדלות פירעון - הסתיים (${path.basename(outputFile)})`);
-    const endTime = new Date();
-    console.log(`[${formatDate(endTime)}] Headless run finished`);
-    // Print invalid IDs again at the very end, after execution time
-    if (invalidIds && invalidIds.length > 0) {
-      console.error('Summary of invalid IDs:');
-      invalidIds.forEach((e) => {
-        console.error(`Row ${e.row}: raw='${e.personalID}', cleaned='${e.cleanedID}'`);
+        const hebrewRow = {};
+        for (const key of Object.keys(updated)) {
+          const hebKey = englishToHebrew[key] || key;
+          hebrewRow[hebKey] = updated[key];
+        }
+        return hebrewRow;
       });
+      if (outputFile.endsWith('.json')) {
+        await fs.writeFile(outputFile, JSON.stringify(results, null, 2));
+      } else {
+        await fs.writeFile(outputFile.replace('.xlsx', '.json'), JSON.stringify(results, null, 2));
+        await exportToXLSX(results, englishToHebrew, outputFile);
+      }
+      if (outputDir.endsWith(path.sep + 'output')) {
+        console.log(`Results saved to ${outputFile} and ${outputFile.replace('.xlsx', '.json')}`);
+      } else {
+        console.log(`Results saved to ${outputFile} and ${outputFile.replace('.xlsx', '.json')}`);
+      }
+      // Open the XLSX file in the default application on Windows
+      if (process.platform === 'win32') {
+        try {
+          require('child_process').exec(`start "" "${outputFile}"`);
+        } catch (e) {
+          console.error('Failed to open XLSX file:', e.message);
+        }
+      }
+      // Update the console title to indicate finished
+      setConsoleTitle(`בדיקת חדלות פירעון - הסתיים (${path.basename(outputFile)})`);
+      const endTime = new Date();
+      console.log(`[${formatDate(endTime)}] Headless run finished`);
+      // Print invalid IDs again at the very end, after execution time
+      if (invalidIds && invalidIds.length > 0) {
+        console.error('Summary of invalid IDs:');
+        invalidIds.forEach((e) => {
+          console.error(`Row ${e.row}: raw='${e.personalID}', cleaned='${e.cleanedID}'`);
+        });
+      }
+    } catch (err) {
+      console.error('Fatal error in main:', err.message);
+      if (err && err.stack) {
+        console.error(err.stack);
+      }
+    } finally {
+      if (checker) {
+        try {
+          await checker.close();
+        } catch (closeErr) {
+          console.error('Error closing checker:', closeErr.message);
+        }
+      }
     }
-    await checker.close();
-  })();
+  }
+
+  main();
 }
 
 // Export for main.js
